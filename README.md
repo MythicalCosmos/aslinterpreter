@@ -3,6 +3,8 @@
 
 <p align="left"> <img src="https://komarev.com/ghpvc/?username=singularity&label=Profile%20views&color=0e75b6&style=flat" alt="singularity" /> </p>
 
+- our inspiration [https://en.wikipedia.org/wiki/Terry_A._Davis](https://en.wikipedia.org/wiki/Terry_A._Davis)
+
 - Reach our pr team on discord at **professorpenguins**
 
 <h3 align="left">Connect with me:</h3>
