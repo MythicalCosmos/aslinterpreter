@@ -1,5 +1,7 @@
 <h1 align="center">ASL interptator by THE GOATS of coding and compsci</h1>
-<h3 align="center">THE BEST AT CODING NO ONE ELSE CAN BEAT US</h3>
+<h3 align="center">I'm the best programmer on Earth that's why God chose me and he gave me Divine intellect this is divine intellect isn't it obvious so I have an ISO creation tool I have a compiler basically I'm the best programmer on Earth chosen by God and it's I was endowed with Divine intellect I'm the best programmer on Earth as evident by Divine intellect</h3>
+
+<p align="left"> <img src="https://komarev.com/ghpvc/?username=singularity&label=Profile%20views&color=0e75b6&style=flat" alt="singularity" /> </p>
 
 - Reach our pr team on discord at **professorpenguins**
 
