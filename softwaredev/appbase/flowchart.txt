@@ -1,0 +1,65 @@
+               ┌────────────────────────────┐
+               │  Start Program              │
+               └────────────┬───────────────┘
+                            │
+                            ▼
+                ┌────────────────────────────┐
+                │  Initialize Constants &    │
+                │  Create Directories        │
+                └────────────┬───────────────┘
+                            │
+                            ▼
+              ┌──────────────────────────────┐
+              │  Launch Tkinter Window        │
+              │  and Initialize GestureApp    │
+              └────────────┬─────────────────┘
+                            │
+                            ▼
+         ┌────────────────────────────────────────┐
+         │  Load Existing Gestures (folders)       │
+         └────────────────┬───────────────────────┘
+                          │
+                          ▼
+             ┌──────────────────────────────┐
+             │  Initialize Camera Feed       │
+             └────────────┬─────────────────┘
+                          │
+                          ▼
+              ┌─────────────────────────────┐
+              │  Build GUI Layout:          │
+              │  Buttons, List, Tree, Video │
+              └────────────┬────────────────┘
+                          │
+                          ▼
+        ┌───────────────────────────────────────────────┐
+        │  Wait for User Actions                        │
+        └────────────┬──────────────────────────────────┘
+                     │
+     ┌───────────────┼────────────────────────┬────────────────────────┐
+     ▼               ▼                        ▼                        ▼
+ [Add Gesture]   [Delete Gesture]       [Start Capture]         [Visualize Data]
+ Create Folder   Confirm & Remove       Begin saving frames     Show sample images
+ Refresh Table   Refresh Table          from camera to folder   per gesture
+
+                     │
+                     ▼
+             [Train & Export Model]
+          ┌─────────────────────────┐
+          │ Load dataset            │
+          │ Train model             │
+          │ Evaluate & export       │
+          └─────────────────────────┘
+
+                     │
+                     ▼
+             [Quit / Close Program]
+          ┌─────────────────────────┐
+          │ Stop camera thread      │
+          │ Release resources       │
+          │ Destroy window          │
+          └─────────────────────────┘
+                     │
+                     ▼
+               ┌──────────────┐
+               │    END        │
+               └──────────────┘

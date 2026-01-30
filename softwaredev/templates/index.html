@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoiceID Transcriber - AI-Powered Speaker Recognition</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <h1>VocalVault</h1>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="#home">Home</a></li>
+                <li><a href="#features">Features</a></li>
+                <li><a href="#how-it-works">How It Works</a></li>
+                <li><a href="#demo">Demo</a></li>
+                <li><a href="#about">About</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section id="home" class="hero">
+        <div class="container">
+            <div class="hero-content">
+                <h2 class="hero-title">AI-Powered Speaker Recognition & Transcription</h2>
+                <p class="hero-subtitle">Automatically identify speakers and generate intelligent summaries of your conversations using advanced AI technology</p>
+                <div class="hero-buttons">
+                    <a href="#demo" class="btn btn-primary">Try Demo</a>
+                    <a href="#features" class="btn btn-secondary">Learn More</a>
+                </div>
+            </div>
+            <div class="hero-image">
+                <video class="demo-video" autoplay muted loop playsinline>
+                    <source src="/static/demo.mp4" type="video/mp4">
+                    Your browser does not support the video tag.
+                </video>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="features">
+        <div class="container">
+            <h2 class="section-title">Key Features</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🎤</div>
+                    <h3>Speaker Identification</h3>
+                    <p>Advanced AI automatically detects and labels different speakers in your audio recordings</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">📝</div>
+                    <h3>Real-Time Transcription</h3>
+                    <p>Get accurate, real-time transcriptions with speaker names clearly labeled</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🤖</div>
+                    <h3>AI Summarization</h3>
+                    <p>Powered by Llama AI to generate concise summaries and key points from conversations</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">🔍</div>
+                    <h3>Easy Search</h3>
+                    <p>Quickly find specific conversations or topics with powerful search functionality</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How It Works Section -->
+    <section id="how-it-works" class="how-it-works">
+        <div class="container">
+            <h2 class="section-title">How It Works</h2>
+            <div class="steps">
+                <div class="step">
+                    <div class="step-number">1</div>
+                    <h3>Record Your Audio</h3>
+                    <p>Record Your Audio in the "Try It Out" section</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">2</div>
+                    <h3>AI Processing</h3>
+                    <p>Our AI analyzes audio patterns to identify unique speakers</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">3</div>
+                    <h3>Transcription</h3>
+                    <p>Speech is converted to text with speaker labels automatically applied</p>
+                </div>
+                <div class="step">
+                    <div class="step-number">4</div>
+                    <h3>Summary Generation</h3>
+                    <p>Llama AI creates summaries and extracts key discussion points</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+     <!-- Demo Section -->
+    <section id="demo" class="demo">
+        <div class="container">
+            <h2 class="section-title">Try It Out</h2>
+            <div class="demo-container">
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-icon">🎤</div>
+                    <h3>Live Recording</h3>
+                    <p>Record your conversation in real-time</p>
+                    <div class="recording-controls">
+                        <button class="btn btn-primary" id="recordBtn">Start Recording</button>
+                        <button class="btn btn-secondary" id="stopBtn" disabled>Stop Recording</button>
+                    </div>
+                    <div id="status" class="status-message"></div>
+                </div>
+                <div class="demo-output">
+                    <h3>Live Transcription</h3>
+                    <div class="transcript-preview" id="transcriptOutput">
+                        <p class="placeholder">Start recording to see transcription appear here...</p>
+                    </div>
+                    <div class="summary-box" id="summaryBox" style="display: none;">
+                        <h4>AI Summary</h4>
+                        <p id="summaryText"></p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- About Section -->
+    <section id="about" class="about">
+        <div class="container">
+            <h2 class="section-title">About This Project</h2>
+            <div class="about-content">
+                <p>This project was developed for the Technology Student Association (TSA) Software Development event. Our goal is to make meeting transcriptions more accessible and useful by automatically identifying speakers and providing intelligent summaries.</p>
+                <div class="tech-stack">
+                    <h3>Technologies Used</h3>
+                    <div class="tech-badges">
+                        <span class="badge">AI Speaker Recognition</span>
+                        <span class="badge">Llama AI</span>
+                        <span class="badge">Natural Language Processing</span>
+                        <span class="badge">Web Audio API</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2024 VoiceID Transcriber - TSA Software Development Project</p>
+        </div>
+    </footer>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
+</body>
+</html>
