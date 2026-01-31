@@ -1,0 +1,4 @@
+appTitle=Asl to English Translator
+width=1280
+height=800
+versionDir=C:/Gestures/versions

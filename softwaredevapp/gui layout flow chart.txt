@@ -1,0 +1,39 @@
+Model Maker Tab (QWidget)
+└── modelMakerTabLayout (QGridLayout)
+    │
+    ├── Row 0: Top Control Bar (Buttons)
+    │   ├── Start Capture
+    │   ├── Refresh Gestures
+    │   ├── Visualize Model
+    │   ├── Train & Export
+    │   ├── Open Version Folder
+    │   └── Quit Program
+    │
+    ├── Row 1: Main Content Area (EXPANDS)
+    │   └── treeAndCameraLayout (QHBoxLayout)
+    │       │
+    │       ├── LEFT: Gesture Management Panel
+    │       │   └── outerGestureControlTreeBtnLayout (QVBoxLayout)
+    │       │       │
+    │       │       ├── "Gesture Management" Label
+    │       │       ├── gestureControlTreeBtnLayout (QHBoxLayout)
+    │       │       │   ├── QLineEdit (gesture name)
+    │       │       │   ├── Add Button
+    │       │       │   └── Delete Button
+    │       │       │
+    │       │       └── gestureControlTreeModelViewAndViewLayout (QHBoxLayout)
+    │       │           ├── listGesturesTree (gesture list)
+    │       │           └── gestureTreeInfo (gesture + count)
+    │       │
+    │       └── RIGHT: Camera View
+    │           └── cameraViewLayout (QVBoxLayout)
+    │               └── cameraViewLabel (live camera feed)
+    │
+    ├── Row 3: Status / Terminal Output
+    │   └── statusFrame
+    │       └── statusLayout
+    │           └── QTextEdit (logs)
+    │
+    └── Row 4: Footer (FIXED)
+        └── datasetPathLabel
+            "Image Storage Path + Current Version"

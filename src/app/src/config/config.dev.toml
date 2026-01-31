@@ -1,0 +1,14 @@
+[app]
+name = "Asl to English Translator"
+environment = "development"
+width = "1280"
+height= "800"
+
+[api]
+base_url = "http://localhost:8080"
+
+[gestures]
+gesture_model = "testing"
+
+[settings]
+examples = "5"
