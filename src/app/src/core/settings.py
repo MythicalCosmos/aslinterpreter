@@ -15,6 +15,10 @@ class GestureSettings(BaseModel):
 
 class Usersettings(BaseModel):
     examples: str
+    sam_rate: int
+    init_chunk_der: bool
+    min_chunk_der: bool
+    chunk_dec: bool
 
 class Settings(BaseModel):
     app: AppSettings

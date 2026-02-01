@@ -2,7 +2,8 @@ from config.loader import load_settings
 #!/usr/bin/env python3
 #
 #
-# Fuck you script it sucks dick to debug 
+# Fuck you script it sucks dick to debug
+# ITS NOT FUCKING WORKINGGGGGGGGGGGG
 #
 #
 #from mediapipe_model_maker import gesture_recognizer as mp
@@ -18,6 +19,12 @@ from pathlib import Path
 #import tensorflow as tf
 #import mediapipe as mp
 from dotenv import load_dotenv
+from faster_whisper import WhisperModel
+from pyannote.audio import Pipeline
+import soundcard as sc
+import soundfile as sf
+import numpy as np
+import io
 import mysql.connector
 import tomli
 import threading
@@ -47,6 +54,64 @@ IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 BASE_DATA = {
     "name": "", "image_count": ""
 }
+SAMPLE_RATE = SETTINGS.settings.sam_rate
+INITIAL_CHUNK_DURATION = SETTINGS.settings.init_chunk_der
+MIN_CHUNK_DURATION = SETTINGS.settings.min_chunk_der
+CHUNK_DECREMENT = SETTINGS.settings.chunk_dec
+class WhisperWorker(qtc.QThread):
+    textReady = qtc.pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+        self.current_chunk_duration = INITIAL_CHUNK_DURATION
+
+        self.running = True
+        self.mic = sc.default_microphone()
+
+        print("Loading Whisper model...")
+        self.model = WhisperModel("small", device="cpu", compute_type="int8")
+
+        try:
+            HF_TOKEN = os.getenv("HF_TOKEN")
+            Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+        except Exception as e:
+            print("Diarization disabled:", e)
+            self.diarization_pipeline = None
+
+    def stop(self):
+        self.running = False
+
+    def transcribe_with_speakers(self, audio):
+        buffer = io.BytesIO()
+        sf.write(buffer, audio, SAMPLE_RATE, format="WAV")
+        buffer.seek(0)
+
+        segments, _ = self.model.transcribe(buffer, beam_size=5)
+
+        return "\n".join(seg.text for seg in segments)
+
+    def run(self):
+        recorded = np.zeros((0, 1), dtype=np.float32)
+
+        while self.running:
+            with self.mic.recorder(
+                samplerate=SAMPLE_RATE, channels=1
+            ) as recorder:
+                chunk = recorder.record(
+                    numframes=int(self.current_chunk_duration * SAMPLE_RATE)
+                )
+
+            recorded = np.concatenate((recorded, chunk))
+
+            text = self.transcribe_with_speakers(recorded)
+            self.textReady.emit(text)
+
+            if self.current_chunk_duration > MIN_CHUNK_DURATION:
+                self.current_chunk_duration = max(
+                    self.current_chunk_duration - CHUNK_DECREMENT,
+                    MIN_CHUNK_DURATION
+                )
 class TextRedirector(qtc.QObject):
     textWritten = qtc.pyqtSignal(str)
     def __init__(self, textEdit: qtw.QTextEdit, mirrorToTerminal=True):
@@ -102,6 +167,8 @@ class MainGui(qtw.QMainWindow):
         self.cameraViewLabel = qtw.QLabel()
         self.cameraViewLayout.addWidget(self.cameraViewLabel)
         self.outLayout = qtw.QVBoxLayout()
+        self.translatorCameraLabel.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
+        self.translatorCameraLabel.setScaledContents(True)
         self.centralWid = qtw.QWidget()
         self.centralWid.setLayout(self.outLayout)
         self.setCentralWidget(self.centralWid)
@@ -117,6 +184,7 @@ class MainGui(qtw.QMainWindow):
         self.tabs.addTab(self.translatorTabUI(), "Translator")
         self.tabs.addTab(self.modelMakerTabUI(), "Model Maker")
         self.tabs.addTab(self.settingsTabUI(), "Settings")
+        self.tabs.currentChanged.connect(lambda _: self.updateFrame())
         self.outLayout.addWidget(self.tabs, 0)
         self.initCamera()
         self.gestures = self.loadExistingGestures(orderByName=True)
@@ -124,16 +192,23 @@ class MainGui(qtw.QMainWindow):
         self.frameTimer = qtc.QTimer()
         self.frameTimer.timeout.connect(self.updateFrame)
         self.frameTimer.start(16)
+        self.whisperWorker = WhisperWorker()
+        self.whisperWorker.textReady.connect(self.updateTranscription)
+        self.whisperWorker.start()
         if self.cap:
             self.launchCameraThread()
             self.updateFrame()
+
     def translatorTabUI(self):
         self.translatorTab = qtw.QWidget()
         self.translatorTabLayout = qtw.QGridLayout()
         self.translatorTabLayout.addLayout(self.translatorCameraViewLayout, 0, 0)
-
-        
+        self.translatorTab.setLayout(self.translatorTabLayout)
+        self.transcriptionOutput = qtw.QTextEdit()
+        self.transcriptionOutput.setReadOnly(True)
+        self.translatorTabLayout.addWidget(self.transcriptionOutput, 0, 2)
         return self.translatorTab
+    
     def modelMakerTabUI(self):
         #
         # Layouts: 
@@ -144,6 +219,7 @@ class MainGui(qtw.QMainWindow):
         #
         #
         # I stopped tracking it good fucking luck
+        # It's fucked
         #
         #
         #
@@ -234,6 +310,9 @@ class MainGui(qtw.QMainWindow):
         self.gestureTreeInfo.header().setSectionResizeMode(qtw.QHeaderView.ResizeMode.Stretch)
         self.listGesturesTree.header().setStretchLastSection(True)
         return self.modelMakerTab
+    
+    def updateTranscription(self, text):
+        self.transcriptionOutput.setPlainText(text)
     def gestureNameExistsCheck(self):
         if self.gestureNameInput.text().strip():
            self.addGesture(self.gestureNameInput.text().strip())
@@ -409,69 +488,44 @@ class MainGui(qtw.QMainWindow):
         self.cameraThread.start()
         print("Camera started") # put it into the bottom terminal
     def updateFrame(self):
-        # Determine the current gesture name safely
-        if isinstance(self.currentGesture, qtw.QTreeWidgetItem):
-            gesture_name = self.currentGesture.text(0)
-        elif isinstance(self.currentGesture, str):
-            gesture_name = self.currentGesture
-        else:
-            gesture_name = None
-        self.name = gesture_name
-        if not self.name:
-            # No gesture selected, just update camera preview
-            frameCopy = None
-            with self.frameLock:
-                if self.frame is not None:
-                    frameCopy = self.frame.copy()
-                    rgb = cv2.cvtColor(frameCopy, cv2.COLOR_BGR2RGB)
-                    h, w, ch = rgb.shape
-                    bytesPerLine = ch * w
-                    qimg = qtg.QImage(rgb.data, w, h, bytesPerLine, qtg.QImage.Format.Format_RGB888)
-                    pixmap = qtg.QPixmap.fromImage(qimg)
-                    scaled = pixmap.scaled(
-                        self.cameraViewLabel.size(),
-                        qtc.Qt.AspectRatioMode.KeepAspectRatio,
-                        qtc.Qt.TransformationMode.SmoothTransformation
-                    )
-                    self.cameraViewLabel.setPixmap(scaled)
+        if not hasattr(self, "frameLock"):
             return
-        # Ensure directory exists for capturing
-        saveDir = self.modelDir / self.name
-        if not saveDir.exists():
-            saveDir.mkdir(parents=True, exist_ok=True)
-        # Copy and display frame
         frameCopy = None
         with self.frameLock:
-            if self.frame is not None:
-                frameCopy = self.frame.copy()
-                rgb = cv2.cvtColor(frameCopy, cv2.COLOR_BGR2RGB)
-                h, w, ch = rgb.shape
-                bytesPerLine = ch * w
-                qimg = qtg.QImage(rgb.data, w, h, bytesPerLine, qtg.QImage.Format.Format_RGB888)
-                # Update both camera labels
-                pixmap = qtg.QPixmap.fromImage(qimg)
-                scaled = pixmap.scaled(
-                    self.cameraViewLabel.size(),
-                    qtc.Qt.AspectRatioMode.KeepAspectRatio,
-                    qtc.Qt.TransformationMode.SmoothTransformation
-                )
-                self.cameraViewLabel.setPixmap(scaled)
-                scaled2 = pixmap.scaled(
-                    self.translatorCameraLabel.size(),
-                    qtc.Qt.AspectRatioMode.KeepAspectRatio,
-                    qtc.Qt.TransformationMode.SmoothTransformation
-                )
-                self.translatorCameraLabel.setPixmap(scaled2)
-                # Capture image if active
-                if self.capturing and self.name:
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
-                    gestureDir = self.modelDir / self.name
-                    gestureDir.mkdir(parents=True, exist_ok=True)
-                    filename = gestureDir / f"{timestamp}.jpg"
-                    cv2.imwrite(str(filename), frameCopy)
-                    imageCount = len([f for f in os.listdir(gestureDir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])
-                    if imageCount % 500 == 0:
-                        self.logStatus(f"Captured {imageCount} images for '{self.name}'")
+            if self.frame is None:
+                return
+            frameCopy = self.frame.copy()
+        rgb = cv2.cvtColor(frameCopy, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        bytesPerLine = ch * w
+        qimg = qtg.QImage(
+            rgb.data, w, h, bytesPerLine, qtg.QImage.Format.Format_RGB888
+        )
+        pixmap = qtg.QPixmap.fromImage(qimg)
+        # ✅ ALWAYS update translator camera
+        if self.translatorCameraLabel.isVisible():
+            scaledTranslator = pixmap.scaled(
+                self.translatorCameraLabel.size(),
+                qtc.Qt.AspectRatioMode.KeepAspectRatio,
+                qtc.Qt.TransformationMode.SmoothTransformation
+            )
+            self.translatorCameraLabel.setPixmap(scaledTranslator)
+        # ✅ ALWAYS update model maker camera
+        if self.cameraViewLabel.isVisible():
+            scaledModel = pixmap.scaled(
+                self.cameraViewLabel.size(),
+                qtc.Qt.AspectRatioMode.KeepAspectRatio,
+                qtc.Qt.TransformationMode.SmoothTransformation
+            )
+            self.cameraViewLabel.setPixmap(scaledModel)
+        # ---- Capture logic (ONLY if capturing) ----
+        if self.capturing and self.currentGesture:
+            gesture = self.currentGesture
+            gestureDir = self.modelDir / gesture
+            gestureDir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
+            filename = gestureDir / f"{timestamp}.jpg"
+            cv2.imwrite(str(filename), frameCopy)
     def toggleCapture(self):
         if not self.cap:
             self.errorMenu(message="No camera available.")
@@ -610,6 +664,9 @@ class MainGui(qtw.QMainWindow):
             self.cameraThread.join(timeout=1)
         if hasattr(self, "cap") and self.cap:
             self.cap.release()
+        if hasattr(self, "whisperWorker"):
+            self.whisperWorker.stop()
+            self.whisperWorker.wait()
         subprocess.Popen(["docker-compose", "down", "-v"], cwd=Path(__file__).parent.parent.parent / "deploy")
         qtw.QApplication.quit()
 if __name__ == "__main__":
