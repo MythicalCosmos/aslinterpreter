@@ -51,6 +51,7 @@ SHARED = JSON_FILE =  Path(__file__).parent.parent.parent / "shared"
 DB_FILE = Path(__file__).parent / "gestures.db"
 DATASET_PATH = Path(__file__).parent.parent.parent / "shared/dataset"
 EXPORT_PATH = Path(__file__).parent.parent.parent / "shared/exports"
+WORKER_LOG_PATH = Path(__file__).parent.parent.parent / "shared/logs/worker.log"
 #EXPORT_PATH.mkdir(parents=True, exist_ok=True)
 #DATASET_PATH.mkdir(parents=True, exist_ok=True)
 MODEL_NAME = SETTINGS.gestures.gesture_model
@@ -66,6 +67,7 @@ SAMPLE_RATE = SETTINGS.settings.sam_rate
 INITIAL_CHUNK_DURATION = SETTINGS.settings.init_chunk_der
 MIN_CHUNK_DURATION = SETTINGS.settings.min_chunk_der
 CHUNK_DECREMENT = SETTINGS.settings.chunk_dec
+
 class WhisperWorker(qtc.QThread):
     textReady = qtc.pyqtSignal(str)
     def __init__(self, parent=None):
@@ -77,7 +79,6 @@ class WhisperWorker(qtc.QThread):
         print("Loading Whisper model...")
         self.model = WhisperModel("small", device="cpu", compute_type="int8")
         try:
-            HF_TOKEN = HF_TOKEN
             Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
         except Exception as e:
             print("Diarization disabled:", e)
@@ -98,10 +99,11 @@ class WhisperWorker(qtc.QThread):
         while self.running:
             with self.mic.recorder(samplerate=SAMPLE_RATE, channels=1) as recorder:
                 chunk = recorder.record(numframes=int(self.currentChunkDuration * SAMPLE_RATE))
+            recorded = np.concatenate([recorded, chunk], axis=0)
             maxSamples = SAMPLE_RATE * 30
             recorded = recorded[-maxSamples:]
             text = self.transcribeAudio(recorded)
-            self.textReady.emit(text)
+            #self.textReady.emit(text)
             if self.currentChunkDuration > MIN_CHUNK_DURATION:
                 self.currentChunkDuration = max(self.currentChunkDuration - CHUNK_DECREMENT, MIN_CHUNK_DURATION)
             if text != self.lastText:
@@ -109,6 +111,50 @@ class WhisperWorker(qtc.QThread):
                 if newText:
                     self.textReady.emit(newText)
                 self.lastText = text
+
+class AspectRatioWidget(qtw.QWidget):
+    def __init__(self, ratio=16/9, parent=None):
+        super().__init__(parent)
+        self.ratio = ratio
+        self.pixmap = None
+        self.label = qtw.QLabel(self)
+        self.label.setAlignment(qtc.Qt.AlignmentFlag.AlignCenter)
+        self.setSizePolicy(
+            qtw.QSizePolicy.Policy.Expanding,
+            qtw.QSizePolicy.Policy.Expanding
+        )
+        self.layout = qtw.QVBoxLayout(self)
+        self.layout.setContentsMargins(0,0,0,0)
+        self.layout.addWidget(self.label)
+
+    def setPixmap(self, pixmap: qtg.QPixmap):
+        if pixmap is not None:
+            self.label.setPixmap(pixmap.scaled(
+                self.label.size(),
+                qtc.Qt.AspectRatioMode.KeepAspectRatio,
+                qtc.Qt.TransformationMode.SmoothTransformation
+            ))
+
+    def paintEvent(self, event):
+        if not self.pixmap:
+            return
+        self.painter = qtg.QPainter(self)
+        self.painter.setRenderHint(qtg.QPainter.RenderHint.SmoothPixmapTransform)
+        self.widget_w = self.width()
+        self.widget_h = self.height()
+        self.target_w = self.widget_w
+        self.target_h = int(self.target_w / self.ratio)
+        if self.target_h > self.widget_h:
+            self.target_h = self.widget_h
+            self.target_w = int(self.target_h * self.ratio)
+        self.x = (self.widget_w - self.target_w) // 2
+        self.y = (self.widget_h - self.target_h) // 2
+        self.painter.drawPixmap(
+            qtc.QRect(self.x, self.y, self.target_w, self.target_h),
+            self.pixmap
+        )
+        self.painter.end()
+
 class TextRedirector(qtc.QObject):
     textWritten = qtc.pyqtSignal(str)
     def __init__(self, textEdit: qtw.QTextEdit, mirrorToTerminal=True):
@@ -148,9 +194,15 @@ class MainGui(qtw.QMainWindow):
         self.datasetPath = Path(DATASET_PATH)
         self.exportPath = Path(EXPORT_PATH)
         self.exampleAmount = NUM_EXAMPLES
+        self.workerLogPath = Path(WORKER_LOG_PATH)
+        self._logFilePos = 0
+        self.workerLogTimer = qtc.QTimer()
+        self.workerLogTimer.timeout.connect(self.readWorkerLogs)
+        self.workerLogTimer.start(250)
         self.cameraViewLayout = qtw.QVBoxLayout()
         self.translatorCameraViewLayout = qtw.QVBoxLayout()
         self.statusLayout = qtw.QVBoxLayout()
+        self.translatorStatusLayout = qtw.QVBoxLayout()
         self.capturing = False
         self.currentGesture = None
         os.makedirs(self.modelDir, exist_ok=True)
@@ -159,20 +211,23 @@ class MainGui(qtw.QMainWindow):
         self.workerLogTimer = qtc.QTimer()
         #self.workerLogTimer.timeout.connect(self.readWorkerLogs)
         self.workerLogTimer.start(250)
-        self.translatorCameraLabel = qtw.QLabel()
-        self.translatorCameraViewLayout.addWidget(self.translatorCameraLabel)
-        self.cameraViewLabel = qtw.QLabel()
-        self.cameraViewLayout.addWidget(self.cameraViewLabel)
+        self.translatorCameraView = AspectRatioWidget(16/9)
+        self.translatorCameraViewLayout.addWidget(self.translatorCameraView)
+        self.cameraView = AspectRatioWidget(16/9)
+        self.cameraViewLayout.addWidget(self.cameraView)
         self.outLayout = qtw.QVBoxLayout()
-        self.translatorCameraLabel.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
-        self.translatorCameraLabel.setScaledContents(True)
+        self.translatorCameraView.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
         self.centralWid = qtw.QWidget()
         self.centralWid.setLayout(self.outLayout)
         self.setCentralWidget(self.centralWid)
         self.tabs = qtw.QTabWidget()
         self.quitTab = qtw.QWidget()
+        self.translatorStatusOutput = qtw.QTextEdit()
+        self.translatorStatusOutput.setReadOnly(True)
         self.statusOutput = qtw.QTextEdit()
         self.statusOutput.setReadOnly(True)
+        self.stdoutRedirector = TextRedirector(self.translatorStatusOutput)
+        self.stderrRedirector = TextRedirector(self.translatorStatusOutput)
         self.stdoutRedirector = TextRedirector(self.statusOutput)
         self.stderrRedirector = TextRedirector(self.statusOutput)
         sys.stdout = self.stdoutRedirector
@@ -182,6 +237,7 @@ class MainGui(qtw.QMainWindow):
         self.tabs.addTab(self.modelMakerTabUI(), "Model Maker")
         self.tabs.addTab(self.settingsTabUI(), "Settings")
         self.tabs.currentChanged.connect(lambda _: self.updateFrame())
+        #self.tabs.currentChanged.connect(self.onTabChanged)
         self.outLayout.addWidget(self.tabs, 0)
         self.initCamera()
         self.gestures = self.loadExistingGestures(orderByName=True)
@@ -206,6 +262,10 @@ class MainGui(qtw.QMainWindow):
         self.audioRecordBtn = qtw.QPushButton("Record Audio")
         self.audioRecordBtnStatusLabel = qtw.QLabel
         self.translatorTabLayout.addWidget(self.audioRecordBtn, 0, 1)
+        self.translatorStatusFrame = qtw.QWidget()
+        self.translatorStatusLayout.addWidget(self.statusOutput)
+        self.translatorStatusFrame.setLayout(self.translatorStatusLayout)
+        self.translatorTabLayout.addWidget(self.translatorStatusFrame, 1, 0)
         self.audioRecordBtn.setCheckable(True)
         self.audioRecordBtn.clicked.connect(self.toggleAudioRecording)
         return self.translatorTab
@@ -239,7 +299,7 @@ class MainGui(qtw.QMainWindow):
         self.deleteGestureBtn = qtw.QPushButton("Delete Gesture",)
         self.gestureControlTreeBtnLayout.addWidget(self.deleteGestureBtn, 2)
         self.deleteGestureBtn.clicked.connect(self.gestureSelectedCheck)
-        self.statusLayout.addWidget(self.statusOutput)
+        self.statusLayout.addWidget(self.translatorStatusOutput)
         self.statusFrame = qtw.QWidget()
         self.startCaptureBtn = qtw.QPushButton("Start Capture")
         self.modelMakerTabLayout.addWidget(self.startCaptureBtn, 0, 0)
@@ -292,11 +352,10 @@ class MainGui(qtw.QMainWindow):
         self.modelMakerTabLayout.addLayout(self.treeAndCameraLayout, 1, 0)
         self.modelMakerTabLayout.addWidget(self.datasetPathLabel, 4, 0, 1, -1)
         self.modelMakerTab.setLayout(self.modelMakerTabLayout)
-        self.cameraViewLabel.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
+        self.cameraView.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
         self.listGesturesTree.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
         self.gestureTreeInfo.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
         self.statusOutput.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
-        self.cameraViewLabel.setScaledContents(True)
         #self.cameraViewLabel.setAlignment(qtc.Qt.AlignmentFlag.AlignCenter)
         self.modelMakerTabLayout.setRowStretch(0, 0)
         #self.modelMakerTabLayout.setRowStretch(1, 1)
@@ -312,6 +371,56 @@ class MainGui(qtw.QMainWindow):
         self.listGesturesTree.header().setStretchLastSection(True)
         return self.modelMakerTab
     
+    def stopCamera(self):
+        self.frameTimer.stop()
+        if self.cap and self.cap.isOpened():
+            self.cap.release()
+
+    def startCamera(self):
+        if not self.cap or not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(0)
+        self.frameTime.start(16)
+    
+    def onTabChanged(self, index):
+        self.widget = self.tabs.widget(index)
+        if self.widget is self.translatorTab or self.modelMakerTab:
+            if not self.frameTimer.isActive():
+                self.frameTimer.start(16)
+                print("Camera on")
+        else:
+            self.frameTimer.stop()
+            print("Camera Stopped")
+
+    def readWorkerLogs(self):
+        if not self.workerLogPath.exists():
+            return
+        with open(self.workerLogPath, "r", encoding="utf-8") as f:
+            f.seek(self._logFilePos)
+            for line in f:
+                self.line = line.strip()
+                if not self.line:
+                    continue
+                try:
+                    self.entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                self.msg = self.entry.get("message", "")
+                self.level = self.entry.get("level", "info")
+                if self.level == "error":
+                    self.logStatus(f"[Error from Model Training] {self.msg}")
+                if self.level == "warning":
+                    self.logStatus(f"[Warning from Model Training] {self.msg}")
+                if self.level == "error":
+                    self.logStatus("Worker crashed — stopping job")
+                    self.resultCheckTimer.stop()
+                if self.level == "debug":
+                    self.logStatus(f"[Debug Message] {self.msg}")
+                if self.level == "error":
+                    self.errorMenu(message=f"[Error Message from Model Training] {self.msg}")
+                else:
+                    self.logStatus(f"[worker] {self.msg}")
+            self._logFilePos = f.tell()
+    
     def toggleAudioRecording(self):
         if self.whisperWorker.isRunning():
             self.whisperWorker.stop()
@@ -326,7 +435,7 @@ class MainGui(qtw.QMainWindow):
         self.ts = datetime.now().strftime("[%H:%M:%S] ")
         self.cursor = self.transcriptionOutput.textCursor()
         self.cursor.movePosition(qtg.QTextCursor.MoveOperation.End)
-        self.cursor.insertText(self.ts +text.strip() + "\n")
+        self.cursor.insertText(self.ts + text.strip() + "\n")
         self.transcriptionOutput.setTextCursor(self.cursor)
         self.transcriptionOutput.ensureCursorVisible()
         
@@ -359,10 +468,11 @@ class MainGui(qtw.QMainWindow):
     
     def addGesture(self, name):
         self.data = self.loadData()
-        if any(entry["name"] == name for entry in self.data):
+        if any(self.entry["name"] == name for self.entry in self.data):
             print(f"Entry '{name}' already exists.")
             return
         self.imageDir = Path(DATASET_PATH) / name
+        self.imageDir.mkdir(parents=True, exist_ok=True)
         self.imageCount = self.countImages(self.imageDir)
         self.data.append({
             "name": name,
@@ -375,8 +485,8 @@ class MainGui(qtw.QMainWindow):
 
     def updateAllImageCounts(self):
         self.data = self.loadData()
-        for entry in self.data:
-            self.folder = os.path.join(DATASET_PATH, entry["name"])
+        for self.entry in self.data:
+            self.folder = os.path.join(DATASET_PATH, self.entry["name"])
             self.entry["image_count"] = self.countImages(self.folder)
         self.saveData(self.data)
         self.logStatus("Image counts updated.")
@@ -411,9 +521,9 @@ class MainGui(qtw.QMainWindow):
         if orderByName:
             self.data = sorted(self.data, key=lambda x: x["name"].lower())
         self.gestures = self.data
-        for entry in self.data:
-            self.name = entry["name"]
-            self.count = entry["image_count"]
+        for self.entry in self.data:
+            self.name = self.entry["name"]
+            self.count = self.entry["image_count"]
             self.listGesturesTree.addTopLevelItem(
             qtw.QTreeWidgetItem([self.name])
             )
@@ -474,8 +584,8 @@ class MainGui(qtw.QMainWindow):
             for i in range(4):
                 self.tmp = cv2.VideoCapture(i, cv2.CAP_DSHOW)
                 if self.tmp.isOpened():
-                    ret, _ = self.tmp.read()
-                    if ret:
+                    self.ret, _ = self.tmp.read()
+                    if self.ret:
                         self.cap = self.tmp
                         break
                     self.tmp.release()
@@ -491,16 +601,15 @@ class MainGui(qtw.QMainWindow):
         self.frameLock = threading.Lock()
         self.frame = None
         self.cameraThread = None
-        
+
     def cameraLoop(self):
         while not getattr(self, "stopEvent", threading.Event()).is_set() and self.cap:
-            ret, frame = self.cap.read()
-            if not ret:
+            self.ret, self.frame = self.cap.read()
+            if not self.ret:
                 time.sleep(0.01)
                 continue
-            frame = cv2.flip(frame, 1)
             with self.frameLock:
-                self.frame = frame    
+                self.frame = self.frame    
             time.sleep(0.01)
     def launchCameraThread(self):
         if getattr(self, "cameraThread", None) and self.cameraThread.is_alive():
@@ -512,42 +621,32 @@ class MainGui(qtw.QMainWindow):
     def updateFrame(self):
         if not hasattr(self, "frameLock"):
             return
-        frameCopy = None
+        self.frameCopy = None
         with self.frameLock:
             if self.frame is None:
                 return
-            frameCopy = self.frame.copy()
-        rgb = cv2.cvtColor(frameCopy, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb.shape
-        bytesPerLine = ch * w
-        qimg = qtg.QImage(
-            rgb.data, w, h, bytesPerLine, qtg.QImage.Format.Format_RGB888
+            self.frameCopy = self.frame.copy()
+        self.rgb = cv2.cvtColor(self.frameCopy, cv2.COLOR_BGR2RGB)
+        self.h, self.w, self.ch = self.rgb.shape
+        self.bytesPerLine = self.ch * self.w
+        self.qimg = qtg.QImage(
+            self.rgb.data, self.w, self.h, self.bytesPerLine, qtg.QImage.Format.Format_RGB888
         )
-        pixmap = qtg.QPixmap.fromImage(qimg)
-        # ✅ ALWAYS update translator camera
-        if self.translatorCameraLabel.isVisible():
-            scaledTranslator = pixmap.scaled(
-                self.translatorCameraLabel.size(),
-                qtc.Qt.AspectRatioMode.KeepAspectRatio,
-                qtc.Qt.TransformationMode.SmoothTransformation
-            )
-            self.translatorCameraLabel.setPixmap(scaledTranslator)
-        # ✅ ALWAYS update model maker camera
-        if self.cameraViewLabel.isVisible():
-            scaledModel = pixmap.scaled(
-                self.cameraViewLabel.size(),
-                qtc.Qt.AspectRatioMode.KeepAspectRatio,
-                qtc.Qt.TransformationMode.SmoothTransformation
-            )
-            self.cameraViewLabel.setPixmap(scaledModel)
-        # ---- Capture logic (ONLY if capturing) ----
+        self.pixmap = qtg.QPixmap.fromImage(self.qimg)
+        if self.translatorCameraView.isVisible():
+            self.frame = self.frameCopy
+            self.translatorCameraView.setPixmap(self.pixmap)
+        if self.cameraView.isVisible():
+            self.frame = self.frameCopy
+            self.cameraView.setPixmap(self.pixmap)
         if self.capturing and self.currentGesture:
-            gesture = self.currentGesture
-            gestureDir = self.modelDir / gesture
-            gestureDir.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
-            filename = gestureDir / f"{timestamp}.jpg"
-            cv2.imwrite(str(filename), frameCopy)
+            self.gesture = self.currentGesture
+            self.gestureDir = self.modelDir / self.gesture
+            self.gestureDir.mkdir(parents=True, exist_ok=True)
+            self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
+            self.filename = self.gestureDir / f"{self.timestamp}.jpg"
+            cv2.imwrite(str(self.filename), self.frameCopy)
+
     def toggleCapture(self):
         if not self.cap:
             self.errorMenu(message="No camera available.")
@@ -557,27 +656,28 @@ class MainGui(qtw.QMainWindow):
             self.errorMenu(message="No gesture selected")
             return
         self.sel = self.item.text(0)
-        gesture = self.sel
+        self.gesture = self.sel
         self.currentGesture = self.sel
         self.capturing = not self.capturing
         if self.capturing:
             self.startCaptureBtn.setText("Stop Capture")
-            gestureDir = os.path.join(self.modelDir, gesture)
-            os.makedirs(gestureDir, exist_ok=True)
-            self.logStatus(f"Started Capture for gesture '{gesture}'.")
+            self.gestureDir = os.path.join(self.modelDir, self.gesture)
+            os.makedirs(self.gestureDir, exist_ok=True)
+            self.logStatus(f"Started Capture for gesture '{self.gesture}'.")
         else:
             self.startCaptureBtn.setText("Start Capture")
             self.updateAllImageCounts()
             self.refreshGestures()
-        state = "ON" if self.capturing else "OFF"
-        self.logStatus(f"Capture {state} for '{gesture}' gesture")
+        self.state = "ON" if self.capturing else "OFF"
+        self.logStatus(f"Capture {self.state} for '{self.gesture}' gesture")
+
     def visualizeModel(self):
         self.logStatus(DATASET_PATH)
         self.labels = []
         for i in os.listdir(DATASET_PATH):
             if os.path.isdir(os.path.join(DATASET_PATH, i)):
                 self.labels.append(i)
-        print(self.labels)
+        self.logStatus(self.labels)
         for self.label in self.labels:
             self.labelDir = os.path.join(DATASET_PATH, self.label)
             self.exampleFilenames = os.listdir(self.labelDir)[:NUM_EXAMPLES]
@@ -589,36 +689,31 @@ class MainGui(qtw.QMainWindow):
             self.fig.suptitle(f'Showing {NUM_EXAMPLES} examples for {self.label}')
         plt.show()
         return self.labels
+    
     def runTraining(self):
-        #
-        # check this code to see what it actually does
-        #
         SHARED.mkdir(exist_ok=True)
         subprocess.Popen(["docker", "compose", "run", "--rm", "worker"])
-        # Clear logs
-        log_file = SHARED / "logs" / "worker.log"
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        log_file.write_text("")
+        self.logFile = SHARED / "logs" / "worker.log"
+        self.logFile.parent.mkdir(parents=True, exist_ok=True)
+        self.logFile.write_text("")
         self._logFilePos = 0
-        # Copy dataset
-        shared_dataset = SHARED / "dataset" / self.modelDir.name
-        shutil.copytree(self.modelDir, shared_dataset, dirs_exist_ok=True)
-        job = {"dataset": f"dataset/{self.modelDir.name}", "export": f"exports/{self.exportDir.name}"}
+        self.sharedDataset = SHARED / "dataset" / self.modelDir.name
+        shutil.copytree(self.modelDir, self.sharedDataset, dirs_exist_ok=True)
+        self.job = {"dataset": f"dataset/{self.modelDir.name}", "export": f"exports/{self.exportDir.name}"}
         with open(SHARED / "job.json", "w") as f:
-            json.dump(job, f)
+            json.dump(self.job, f)
         subprocess.Popen(["docker", "compose", "build", "--no-cache"], cwd=Path(__file__).parent.parent.parent / "deploy")
         subprocess.Popen(["docker", "compose", "up"], cwd=Path(__file__).parent.parent.parent / "deploy")
         self.logStatus("Started training worker")
+
     def trainExportModel(self):
-        #
-        # check what this does and if it needs to be changed
-        #
         self.runTraining()
         self.logStatus("Starting Model Training!")
         self.logStatus("This may take anywhere from 30 Seconds to 20 Minutes depending on hardware capabilities and amount of images being trained.")
         self.resultCheckTimer = qtc.QTimer()
         self.resultCheckTimer.timeout.connect(self.checkWorkerResult)
         self.resultCheckTimer.start(1000)
+
     def checkWorkerResult(self):
         #
         # check this code to see what it does and if it needs to be changed
@@ -627,8 +722,8 @@ class MainGui(qtw.QMainWindow):
         if not self.resultPath.exists():
             return
         with open(self.resultPath) as f:
-            result = json.load(f)
-        self.logStatus(f"Final accuracy: {result['accuracy']}")
+            self.result = json.load(f)
+        self.logStatus(f"Final accuracy: {self.result['accuracy']}")
         self.resultCheckTimer.stop()
         self.workerLogTimer.stop()
         subprocess.Popen(["docker", "compose", "down", "-v"], cwd=Path(__file__).parent.parent.parent / "deploy")

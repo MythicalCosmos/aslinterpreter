@@ -1,6 +1,6 @@
 from pathlib import Path
 import json
-from mediapipe_model_maker.python.vision.gesture_recognizer import gesture_recognizer
+from mediapipe_model_maker.python.vision.gesture_recognizer import gesture_recognizer as mp
 import time
 
 SHARED = Path("/shared")
@@ -24,33 +24,31 @@ EXPORT_PATH = SHARED / JOB["export"]
 log(f"Dataset: {DATASET_PATH}")
 log(f"Export: {EXPORT_PATH}")
 EXPORT_PATH.mkdir(parents=True, exist_ok=True)
-# ---- TRAINING LOGIC (your code, adapted) ----
-data = mediapipe_model_maker.python.vision.gesture_recognizer.Dataset.from_folder(
+data = mp.python.vision.gesture_recognizer.Dataset.from_folder(
     dirname=DATASET_PATH,
-    hparams=mediapipe_model_maker.python.vision.gesture_recognizer.HandDataPreprocessingParams()
+    hparams=mp.python.vision.gesture_recognizer.HandDataPreprocessingParams()
 )
 train_data, rest_data = data.split(0.8)
 validation_data, test_data = rest_data.split(0.5)
 log("Training initial model")
-hparams = mediapipe_model_maker.python.vision.gesture_recognizer.HParams(export_dir=EXPORT_PATH / "Exported")
-options = mediapipe_model_maker.python.vision.gesture_recognizer.GestureRecognizerOptions(hparams=hparams)
-model = mediapipe_model_maker.python.vision.gesture_recognizer.GestureRecognizer.create(train_data=train_data, validation_data=validation_data, options=options)
+hparams = mp.python.vision.gesture_recognizer.HParams(export_dir=EXPORT_PATH / "Exported")
+options = mp.python.vision.gesture_recognizer.GestureRecognizerOptions(hparams=hparams)
+model = mp.python.vision.gesture_recognizer.GestureRecognizer.create(train_data=train_data, validation_data=validation_data, options=options)
 loss, acc = model.evaluate(test_data, batch_size=1)
 log(f"Test loss: {loss}, Test accuracy: {acc}")
 model.export_model()
 log("Initial model exported")
-# ---- FINAL EXPORT ----
 log("Training final model")
 hparams = mp.HParams(
     learning_rate=0.003,
     export_dir=EXPORT_PATH / "Final Export"
 )
-model_options = mediapipe_model_maker.python.vision.gesture_recognizer.ModelOptions(dropout_rate=0.2)
-options = mediapipe_model_maker.python.vision.gesture_recognizer.GestureRecognizerOptions(
+model_options = mp.python.vision.gesture_recognizer.ModelOptions(dropout_rate=0.2)
+options = mp.python.vision.gesture_recognizer.GestureRecognizerOptions(
     model_options=model_options,
     hparams=hparams
 )
-model_2 = mediapipe_model_maker.python.vision.gesture_recognizer.GestureRecognizer.create(
+model_2 = mp.python.vision.gesture_recognizer.GestureRecognizer.create(
     train_data=train_data,
     validation_data=validation_data,
     options=options
