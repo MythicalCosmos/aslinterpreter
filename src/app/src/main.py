@@ -95,12 +95,8 @@ class WhisperWorker(qtc.QThread):
     def run(self):
         recorded = np.zeros((0, 1), dtype=np.float32)
         while self.running:
-            with self.mic.recorder(
-                samplerate=SAMPLE_RATE, channels=1
-            ) as recorder:
-                chunk = recorder.record(
-                    numframes=int(self.current_chunk_duration * SAMPLE_RATE)
-                )
+            with self.mic.recorder(samplerate=SAMPLE_RATE, channels=1) as recorder:
+                chunk = recorder.record(numframes=int(self.current_chunk_duration * SAMPLE_RATE))
             max_samples = SAMPLE_RATE * 30
             recorded = recorded[-max_samples:]
             text = self.transcribeAudio(recorded)
