@@ -192,7 +192,6 @@ class MainGui(qtw.QMainWindow):
         self.frameTimer.start(16)
         self.whisperWorker = WhisperWorker()
         self.whisperWorker.textReady.connect(self.updateTranscription)
-        self.whisperWorker.start()
         if self.cap:
             self.launchCameraThread()
             self.updateFrame()
@@ -315,14 +314,14 @@ class MainGui(qtw.QMainWindow):
         return self.modelMakerTab
     
     def toggleAudioRecording(self):
-        if self.whisperWorker.running:
+        if self.whisperWorker.isRunning():
             self.whisperWorker.stop()
-            self.audioRecordBtn.setText("Stop Audio Transcription")
+            self.whisperWorker.wait()
+            self.audioRecordBtn.setText("Start Audio Transcription")
         else:
             self.whisperWorker.running = True
-            if not self.whisperWorker.isRunning():
-                self.whisperWorker.start()
-            self.audioRecordBtn.setText("Start Audio Transcription")
+            self.whisperWorker.start()
+            self.audioRecordBtn.setText("Stop Audio Transcription")
         
     def updateTranscription(self, text):
         self.transcriptionOutput.setPlainText(text)
