@@ -14,14 +14,18 @@ class GestureSettings(BaseModel):
     gesture_model: str
 
 class Usersettings(BaseModel):
-    examples: str
+    examples: int
     sam_rate: int
-    init_chunk_der: bool
-    min_chunk_der: bool
-    chunk_dec: bool
+    init_chunk_der: float
+    min_chunk_der: float
+    chunk_dec: float
+
+class envSettings(BaseModel):
+    hf_token: str
 
 class Settings(BaseModel):
     app: AppSettings
     api: ApiSettings
     gestures: GestureSettings
     settings: Usersettings
+    env: envSettings

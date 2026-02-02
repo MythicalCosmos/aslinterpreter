@@ -11,8 +11,11 @@ base_url = "http://localhost:8080"
 gesture_model = "testing"
 
 [settings]
-examples = "5"
-sam_rate = "16000"
-init_chunk_der = "8.0"
-min_chunk_der = "2.0"
-chunk_dec = "1.0"
+examples = 5
+sam_rate = 16000
+init_chunk_der = 8.0
+min_chunk_der = 2.0
+chunk_dec = 1.0
+
+[env]
+hf_token = "hf_IxRemcmOXbUwQaONBIRLqjzsoQRWhJFVJae"

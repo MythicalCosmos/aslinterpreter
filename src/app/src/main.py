@@ -6,6 +6,13 @@ from config.loader import load_settings
 # ITS NOT FUCKING WORKINGGGGGGGGGGGG
 #
 #
+#
+# GOOD FUCKING LUCK WITH main.py :3 :)
+# you will not have fun 
+# if it works DO NOT FUCKING TOUCH IT
+# hours spent on this bs = 25 or smth idfk
+#
+#
 #from mediapipe_model_maker import gesture_recognizer as mp
 #assert tf.__version__.startswith('2')
 import matplotlib.pyplot as plt
@@ -39,6 +46,7 @@ import cv2
 import re
 import os 
 SETTINGS = load_settings()
+HF_TOKEN = SETTINGS.env.hf_token
 SHARED = JSON_FILE =  Path(__file__).parent.parent.parent / "shared"
 DB_FILE = Path(__file__).parent / "gestures.db"
 DATASET_PATH = Path(__file__).parent.parent.parent / "shared/dataset"
@@ -60,20 +68,15 @@ MIN_CHUNK_DURATION = SETTINGS.settings.min_chunk_der
 CHUNK_DECREMENT = SETTINGS.settings.chunk_dec
 class WhisperWorker(qtc.QThread):
     textReady = qtc.pyqtSignal(str)
-
     def __init__(self, parent=None):
         super().__init__(parent)
-
         self.current_chunk_duration = INITIAL_CHUNK_DURATION
-
         self.running = True
         self.mic = sc.default_microphone()
-
         print("Loading Whisper model...")
         self.model = WhisperModel("small", device="cpu", compute_type="int8")
-
         try:
-            HF_TOKEN = os.getenv("HF_TOKEN")
+            HF_TOKEN = HF_TOKEN
             Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
         except Exception as e:
             print("Diarization disabled:", e)
@@ -82,18 +85,15 @@ class WhisperWorker(qtc.QThread):
     def stop(self):
         self.running = False
 
-    def transcribe_with_speakers(self, audio):
+    def transcribeAudio(self, audio):
         buffer = io.BytesIO()
         sf.write(buffer, audio, SAMPLE_RATE, format="WAV")
         buffer.seek(0)
-
         segments, _ = self.model.transcribe(buffer, beam_size=5)
-
         return "\n".join(seg.text for seg in segments)
 
     def run(self):
         recorded = np.zeros((0, 1), dtype=np.float32)
-
         while self.running:
             with self.mic.recorder(
                 samplerate=SAMPLE_RATE, channels=1
@@ -101,12 +101,10 @@ class WhisperWorker(qtc.QThread):
                 chunk = recorder.record(
                     numframes=int(self.current_chunk_duration * SAMPLE_RATE)
                 )
-
-            recorded = np.concatenate((recorded, chunk))
-
-            text = self.transcribe_with_speakers(recorded)
+            max_samples = SAMPLE_RATE * 30
+            recorded = recorded[-max_samples:]
+            text = self.transcribeAudio(recorded)
             self.textReady.emit(text)
-
             if self.current_chunk_duration > MIN_CHUNK_DURATION:
                 self.current_chunk_duration = max(
                     self.current_chunk_duration - CHUNK_DECREMENT,
@@ -207,6 +205,11 @@ class MainGui(qtw.QMainWindow):
         self.transcriptionOutput = qtw.QTextEdit()
         self.transcriptionOutput.setReadOnly(True)
         self.translatorTabLayout.addWidget(self.transcriptionOutput, 0, 2)
+        self.audioRecordBtn = qtw.QPushButton("Record Audio")
+        self.audioRecordBtnStatusLabel = qtw.QLabel
+        self.translatorTabLayout.addWidget(self.audioRecordBtn, 0, 1)
+        self.audioRecordBtn.setCheckable(True)
+        self.audioRecordBtn.clicked.connect(self.toggleAudioRecording)
         return self.translatorTab
     
     def modelMakerTabUI(self):
@@ -311,6 +314,16 @@ class MainGui(qtw.QMainWindow):
         self.listGesturesTree.header().setStretchLastSection(True)
         return self.modelMakerTab
     
+    def toggleAudioRecording(self):
+        if self.whisperWorker.running:
+            self.whisperWorker.stop()
+            self.audioRecordBtn.setText("Stop Audio Transcription")
+        else:
+            self.whisperWorker.running = True
+            if not self.whisperWorker.isRunning():
+                self.whisperWorker.start()
+            self.audioRecordBtn.setText("Start Audio Transcription")
+        
     def updateTranscription(self, text):
         self.transcriptionOutput.setPlainText(text)
     def gestureNameExistsCheck(self):
