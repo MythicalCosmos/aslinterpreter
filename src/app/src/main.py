@@ -70,7 +70,8 @@ class WhisperWorker(qtc.QThread):
     textReady = qtc.pyqtSignal(str)
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.current_chunk_duration = INITIAL_CHUNK_DURATION
+        self.currentChunkDuration = INITIAL_CHUNK_DURATION
+        self.lastText = ""
         self.running = True
         self.mic = sc.default_microphone()
         print("Loading Whisper model...")
@@ -96,16 +97,18 @@ class WhisperWorker(qtc.QThread):
         recorded = np.zeros((0, 1), dtype=np.float32)
         while self.running:
             with self.mic.recorder(samplerate=SAMPLE_RATE, channels=1) as recorder:
-                chunk = recorder.record(numframes=int(self.current_chunk_duration * SAMPLE_RATE))
-            max_samples = SAMPLE_RATE * 30
-            recorded = recorded[-max_samples:]
+                chunk = recorder.record(numframes=int(self.currentChunkDuration * SAMPLE_RATE))
+            maxSamples = SAMPLE_RATE * 30
+            recorded = recorded[-maxSamples:]
             text = self.transcribeAudio(recorded)
             self.textReady.emit(text)
-            if self.current_chunk_duration > MIN_CHUNK_DURATION:
-                self.current_chunk_duration = max(
-                    self.current_chunk_duration - CHUNK_DECREMENT,
-                    MIN_CHUNK_DURATION
-                )
+            if self.currentChunkDuration > MIN_CHUNK_DURATION:
+                self.currentChunkDuration = max(self.currentChunkDuration - CHUNK_DECREMENT, MIN_CHUNK_DURATION)
+            if text != self.lastText:
+                newText = text[len(self.lastText):].strip()
+                if newText:
+                    self.textReady.emit(newText)
+                self.lastText = text
 class TextRedirector(qtc.QObject):
     textWritten = qtc.pyqtSignal(str)
     def __init__(self, textEdit: qtw.QTextEdit, mirrorToTerminal=True):
@@ -320,7 +323,13 @@ class MainGui(qtw.QMainWindow):
             self.audioRecordBtn.setText("Stop Audio Transcription")
         
     def updateTranscription(self, text):
-        self.transcriptionOutput.setPlainText(text)
+        self.ts = datetime.now().strftime("[%H:%M:%S] ")
+        self.cursor = self.transcriptionOutput.textCursor()
+        self.cursor.movePosition(qtg.QTextCursor.MoveOperation.End)
+        self.cursor.insertText(self.ts +text.strip() + "\n")
+        self.transcriptionOutput.setTextCursor(self.cursor)
+        self.transcriptionOutput.ensureCursorVisible()
+        
     def gestureNameExistsCheck(self):
         if self.gestureNameInput.text().strip():
            self.addGesture(self.gestureNameInput.text().strip())
@@ -330,15 +339,15 @@ class MainGui(qtw.QMainWindow):
         if not os.path.exists(JSON_FILE):
             return []
         with open(JSON_FILE, "r") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
+            self.data = json.load(f)
+        if isinstance(self.data, dict):
             print("WARNING: gestures.json is not a list — fixing automatically")
-            data = [data]
-        if not isinstance(data, list):
+            self.data = [self.data]
+        if not isinstance(self.data, list):
             print("ERROR: gestures.json is invalid")
             return []
-
-        return data
+        return self.data
+    
     def saveData(self, data):
         with open(JSON_FILE, "w") as f:
             json.dump(data, f, indent=4)
@@ -349,28 +358,28 @@ class MainGui(qtw.QMainWindow):
         return sum(1 for file in os.listdir(directory) if file.lower().endswith(IMAGE_EXTENSIONS))
     
     def addGesture(self, name):
-        data = self.loadData()
-        if any(entry["name"] == name for entry in data):
+        self.data = self.loadData()
+        if any(entry["name"] == name for entry in self.data):
             print(f"Entry '{name}' already exists.")
             return
-        imageDir = Path(DATASET_PATH) / name
-        imageCount = self.countImages(imageDir)
-        data.append({
+        self.imageDir = Path(DATASET_PATH) / name
+        self.imageCount = self.countImages(self.imageDir)
+        self.data.append({
             "name": name,
-            "image_count": imageCount
+            "image_count": self.imageCount
         })
-        self.saveData(data)
+        self.saveData(self.data)
         self.loadExistingGestures()
         self.gestureNameInput.clear()
-        self.logStatus(f"Added '{name}' with {imageCount} images.")
+        self.logStatus(f"Added '{name}' with {self.imageCount} images.")
 
     def updateAllImageCounts(self):
-        data = self.loadData()
-        for entry in data:
-            folder = os.path.join(DATASET_PATH, entry["name"])
-            entry["image_count"] = self.countImages(folder)
-        self.saveData(data)
-        print("Image counts updated.")
+        self.data = self.loadData()
+        for entry in self.data:
+            self.folder = os.path.join(DATASET_PATH, entry["name"])
+            self.entry["image_count"] = self.countImages(self.folder)
+        self.saveData(self.data)
+        self.logStatus("Image counts updated.")
     
     def deleteGesture(self, name):
         self.frameTimer.stop()
@@ -394,57 +403,61 @@ class MainGui(qtw.QMainWindow):
         self.capturing = False
         self.frameTimer.start(16)
         self.loadExistingGestures()
+
     def loadExistingGestures(self, orderByName=True):
         self.listGesturesTree.clear()
         self.gestureTreeInfo.clear()
-        data = self.loadData()
+        self.data = self.loadData()
         if orderByName:
-            data = sorted(data, key=lambda x: x["name"].lower())
-        self.gestures = data
-        for entry in data:
-            name = entry["name"]
-            count = entry["image_count"]
+            self.data = sorted(self.data, key=lambda x: x["name"].lower())
+        self.gestures = self.data
+        for entry in self.data:
+            self.name = entry["name"]
+            self.count = entry["image_count"]
             self.listGesturesTree.addTopLevelItem(
-            qtw.QTreeWidgetItem([name])
+            qtw.QTreeWidgetItem([self.name])
             )
             self.gestureTreeInfo.addTopLevelItem(
-                qtw.QTreeWidgetItem([name, str(count)])
+                qtw.QTreeWidgetItem([self.name, str(self.count)])
             )
-        return data
+        return self.data
         
     def refreshGestures(self):
         self.loadExistingGestures(orderByName=True)
         self.logStatus("Refreshed Gesture Tree")
+
     def gestureSelectedCheck(self):
         self.item = self.selectedGesture()
         if self.item:
             self.confirmGestureDelete(self.item)
         else:
-            self.errorMenu(message="A Gesture is Not Selected.")  
+            self.errorMenu(message="A Gesture is Not Selected.")
+
     def selectedGesture(self):
-        item = self.listGesturesTree.currentItem()
-        if not item:
+        self.item = self.listGesturesTree.currentItem()
+        if not self.item:
             return None
-        name = item.text(0)
+        self.name = self.item.text(0)
         for i in range(self.gestureTreeInfo.topLevelItemCount()):
-            info_item = self.gestureTreeInfo.topLevelItem(i)
-            if info_item.text(0) == name:
-                self.gestureTreeInfo.setCurrentItem(info_item)
+            self.infoItem = self.gestureTreeInfo.topLevelItem(i)
+            if self.infoItem.text(0) == self.name:
+                self.gestureTreeInfo.setCurrentItem(self.infoItem)
                 break
-        return item
+        return self.item
+    
     def confirmGestureDelete(self, item):
         item = self.listGesturesTree.currentItem()
         if not item:
             return
         self.name = item.text(0)
-        reply = qtw.QMessageBox.question(
+        self.reply = qtw.QMessageBox.question(
             self,
             "Confirm Deletion",
             f"Are you sure you want to delete the gesture: '{self.name}'?",
             qtw.QMessageBox.StandardButton.Yes | qtw.QMessageBox.StandardButton.No,
             qtw.QMessageBox.StandardButton.No
         )
-        if reply == qtw.QMessageBox.StandardButton.Yes:
+        if self.reply == qtw.QMessageBox.StandardButton.Yes:
             self.frameTimer.stop()
             if self.capturing:
                 self.capturing = False
@@ -455,22 +468,22 @@ class MainGui(qtw.QMainWindow):
         self.toggleCapture()
     def initCamera(self):
         if hasattr(self, "cap") and self.cap and self.cap.isOpened():
-            cap = self.cap
+            self.cap = self.cap
         else:
-            cap = None
+            self.cap = None
             for i in range(4):
-                tmp = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-                if tmp.isOpened():
-                    ret, _ = tmp.read()
+                self.tmp = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                if self.tmp.isOpened():
+                    ret, _ = self.tmp.read()
                     if ret:
-                        cap = tmp
+                        self.cap = self.tmp
                         break
-                    tmp.release()
-        if not cap or not cap.isOpened():
+                    self.tmp.release()
+        if not self.cap or not self.cap.isOpened():
             self.errorMenu(message="No camera found")
             self.cap = None
             return             
-        self.cap = cap
+        self.cap = self.cap
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 2640)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1440)
         print(f"Found Camera {self.cap.isOpened()}") 
@@ -478,6 +491,7 @@ class MainGui(qtw.QMainWindow):
         self.frameLock = threading.Lock()
         self.frame = None
         self.cameraThread = None
+        
     def cameraLoop(self):
         while not getattr(self, "stopEvent", threading.Event()).is_set() and self.cap:
             ret, frame = self.cap.read()
