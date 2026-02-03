@@ -160,14 +160,16 @@ class AspectRatioWidget(qtw.QWidget):
 
 class GestureRecognizerWithoutLinesWorker(qtc.QObject):
     frameReady = qtc.pyqtSignal(qtg.QPixmap)
-    def __init__(self, model_path: str, parent=None):
+    gestureRecognized = qtc.pyqtSignal(str, float)
+    def __init__(self, MODEL_PATH: str, parent=None):
         super().__init__(parent)
-        self.modelPath = model_path
+        self.modelPath = str(MODEL_PATH)
         self.running = False
         self.baseOptions = python.BaseOptions(model_asset_path=str(self.modelPath))
         self.options = vision.GestureRecognizerOptions(base_options=self.baseOptions)
         self.recognizer = vision.GestureRecognizer.create_from_options(self.options)
-
+        self.lastGesture = None
+        
     @qtc.pyqtSlot(np.ndarray)
     def processFrame(self, frame):
         if frame is None:
@@ -324,9 +326,12 @@ class MainGui(qtw.QMainWindow):
         self.frameTimer.timeout.connect(self.updateFrame)
         self.frameTimer.start(16)
         self.whisperWorker = WhisperWorker()
+        self.aslTranscriptionScoresOutput = qtw.QTextEdit()
+        self.aslTranscriptionScoresOutput.setReadOnly(True)
         self.signRecognizerNoLines.frameReady.connect(self.translatorCameraView.setPixmap)
         self.whisperWorker.textReady.connect(self.updateTranscription)
         self.frameForGesture.connect(self.signRecognizerNoLines.processFrame)
+        self.signRecognizerNoLines.gestureRecognized.connect(self.updateASLTranscription)
         if self.cap:
             self.launchCameraThread()
             self.updateFrame()
@@ -338,7 +343,11 @@ class MainGui(qtw.QMainWindow):
         self.translatorTab.setLayout(self.translatorTabLayout)
         self.transcriptionOutput = qtw.QTextEdit()
         self.transcriptionOutput.setReadOnly(True)
+        self.aslTranscriptionOutput = qtw.QTextEdit()
+        self.aslTranscriptionOutput.setReadOnly(True)
         self.translatorTabLayout.addWidget(self.transcriptionOutput, 0, 2)
+        self.translatorTabLayout.addWidget(self.aslTranscriptionOutput, 1, 2)
+        #self.translatorTabLayout.addWidget(self.aslTranscriptionScoresOutput, 2, 2)
         self.audioRecordBtn = qtw.QPushButton("Record Audio")
         self.audioRecordBtnStatusLabel = qtw.QLabel
         self.translatorTabLayout.addWidget(self.audioRecordBtn, 0, 1)
@@ -543,6 +552,15 @@ class MainGui(qtw.QMainWindow):
         self.cursor.insertText(self.ts + text.strip() + "\n")
         self.transcriptionOutput.setTextCursor(self.cursor)
         self.transcriptionOutput.ensureCursorVisible()
+    
+    @qtc.pyqtSlot(str, float)
+    def updateASLTranscription(self, name, score):
+        self.ts = datetime.now().strftime("[%H:%M:%S] ")
+        self.cursor = self.aslTranscriptionOutput.textCursor()
+        self.cursor.movePosition(qtg.QTextCursor.MoveOperation.End)
+        self.cursor.insertText(f"{self.ts}{name} ({score:.2f})\n")
+        self.aslTranscriptionOutput.setTextCursor(self.cursor)
+        self.aslTranscriptionOutput.ensureCursorVisible()
         
     def gestureNameExistsCheck(self):
         if self.gestureNameInput.text().strip():
