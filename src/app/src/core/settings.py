@@ -19,6 +19,7 @@ class Usersettings(BaseModel):
     init_chunk_der: float
     min_chunk_der: float
     chunk_dec: float
+    lines: bool
 
 class envSettings(BaseModel):
     hf_token: str

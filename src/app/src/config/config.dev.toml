@@ -16,6 +16,7 @@ sam_rate = 16000
 init_chunk_der = 8.0
 min_chunk_der = 2.0
 chunk_dec = 1.0
+lines = "false"
 
 [env]
 hf_token = "hf_IxRemcmOXbUwQaONBIRLqjzsoQRWhJFVJae"

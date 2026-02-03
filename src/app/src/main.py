@@ -1,20 +1,21 @@
-from config.loader import load_settings
 #!/usr/bin/env python3
+from config.loader import load_settings
 #
 #
-# Fuck you script it sucks dick to debug
-# ITS NOT FUCKING WORKINGGGGGGGGGGGG
+# Fuck you script
 #
 #
 #
 # GOOD FUCKING LUCK WITH main.py :3 :)
 # you will not have fun 
 # if it works DO NOT FUCKING TOUCH IT
-# hours spent on this bs = 25 or smth idfk
 #
 #
 #from mediapipe_model_maker import gesture_recognizer as mp
 #assert tf.__version__.startswith('2')
+import mediapipe as mp
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
 import matplotlib.pyplot as plt
 #from PIL import Image, ImageTk
 from datetime import datetime
@@ -47,18 +48,19 @@ import re
 import os 
 SETTINGS = load_settings()
 HF_TOKEN = SETTINGS.env.hf_token
-SHARED = JSON_FILE =  Path(__file__).parent.parent.parent / "shared"
+SHARED = Path(__file__).parent.parent.parent / "shared"
 DB_FILE = Path(__file__).parent / "gestures.db"
 DATASET_PATH = Path(__file__).parent.parent.parent / "shared/dataset"
 EXPORT_PATH = Path(__file__).parent.parent.parent / "shared/exports"
 WORKER_LOG_PATH = Path(__file__).parent.parent.parent / "shared/logs/worker.log"
+MODEL_PATH = Path(__file__).parent.parent.parent / "deploy/gestures.task"
 #EXPORT_PATH.mkdir(parents=True, exist_ok=True)
 #DATASET_PATH.mkdir(parents=True, exist_ok=True)
 MODEL_NAME = SETTINGS.gestures.gesture_model
 CAMERA_INDEX = 0
 NUM_EXAMPLES = SETTINGS.settings.examples
 CONFIG_PATH = None
-JSON_FILE = JSON_FILE =  Path(__file__).parent.parent.parent / "shared/gestures.json"
+JSON_FILE = Path(__file__).parent.parent.parent / "shared/gestures.json"
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 BASE_DATA = {
     "name": "", "image_count": ""
@@ -128,6 +130,7 @@ class AspectRatioWidget(qtw.QWidget):
         self.layout.addWidget(self.label)
 
     def setPixmap(self, pixmap: qtg.QPixmap):
+        self.pixmap = pixmap
         if pixmap is not None:
             self.label.setPixmap(pixmap.scaled(
                 self.label.size(),
@@ -155,6 +158,37 @@ class AspectRatioWidget(qtw.QWidget):
         )
         self.painter.end()
 
+class GestureRecognizerWithoutLinesWorker(qtc.QObject):
+    frameReady = qtc.pyqtSignal(qtg.QPixmap)
+    def __init__(self, model_path: str, parent=None):
+        super().__init__(parent)
+        self.modelPath = model_path
+        self.running = False
+        self.baseOptions = python.BaseOptions(model_asset_path=str(self.modelPath))
+        self.options = vision.GestureRecognizerOptions(base_options=self.baseOptions)
+        self.recognizer = vision.GestureRecognizer.create_from_options(self.options)
+
+    @qtc.pyqtSlot(np.ndarray)
+    def processFrame(self, frame):
+        if frame is None:
+            return
+        frame = cv2.flip(frame, 1)
+        self.rgbFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.mpImage = mp.Image(image_format=mp.ImageFormat.SRGB, data=self.rgbFrame)
+        self.result = self.recognizer.recognize(self.mpImage)
+        if self.result.gestures:
+            self.topGesture = self.result.gestures[0][0]
+            self.gestureName = self.topGesture.category_name
+            self.score = self.topGesture.score
+            if self.result.gestures and self.topGesture.score > 0.6:
+                cv2.putText(frame, f"{self.gestureName} ({self.score:.2f})", (30, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        self.h, self.w, self.ch = frame.shape
+        self.bytesPerLine = self.ch * self.w
+        self.qimg = qtg.QImage(frame.data, self.w, self.h, self.bytesPerLine, qtg.QImage.Format.Format_BGR888)
+        self.pixmap = qtg.QPixmap.fromImage(self.qimg)
+        self.frameReady.emit(self.pixmap)
+
 class TextRedirector(qtc.QObject):
     textWritten = qtc.pyqtSignal(str)
     def __init__(self, textEdit: qtw.QTextEdit, mirrorToTerminal=True):
@@ -163,7 +197,10 @@ class TextRedirector(qtc.QObject):
         self.mirrorToTerminal = mirrorToTerminal
         self._stdout = sys.__stdout__
         self._stderr = sys.__stderr__
-        self.textWritten.connect(self._append_text)
+        self._stdout2 = sys.__stdout__
+        self._stderr2 = sys.__stderr__
+        self.textWritten.connect(self.appendText)
+
     def write(self, message):
         if not message.strip():
             return
@@ -172,13 +209,46 @@ class TextRedirector(qtc.QObject):
         self.textWritten.emit(fullMessage)
         if self.mirrorToTerminal:
             self._stdout.write(fullMessage + "\n")
+            self._stdout2.write(fullMessage + "\n")
             self._stdout.flush()
+            self._stdout2.flush()
     def flush(self):
         pass
     @qtc.pyqtSlot(str)
-    def _append_text(self, message):
+    def appendText(self, message):
         self.textEdit.append(message)
+
+class TranslatorTextRedirector(qtc.QObject):
+    textWritten = qtc.pyqtSignal(str)
+    def __init__(self, textEdit: qtw.QTextEdit, mirrorToTerminal=True):
+        super().__init__()
+        self.textEdit = textEdit
+        self.mirrorToTerminal = mirrorToTerminal
+        self._stdout = sys.__stdout__
+        self._stderr = sys.__stderr__
+        self._stdout2 = sys.__stdout__
+        self._stderr2 = sys.__stderr__
+        self.textWritten.connect(self.appendText)
+
+    def write(self, message):
+        if not message.strip():
+            return
+        timestamp = datetime.now().strftime("[%H:%M:%S] ")
+        fullMessage = timestamp + message.rstrip()
+        self.textWritten.emit(fullMessage)
+        if self.mirrorToTerminal:
+            self._stdout.write(fullMessage + "\n")
+            self._stdout2.write(fullMessage + "\n")
+            self._stdout.flush()
+            self._stdout2.flush()
+    def flush(self):
+        pass
+    @qtc.pyqtSlot(str)
+    def appendText(self, message):
+        self.textEdit.append(message)
+
 class MainGui(qtw.QMainWindow):
+    frameForGesture = qtc.pyqtSignal(np.ndarray)
     def __init__(self):
         super().__init__()
         self.title = SETTINGS.app.name
@@ -195,6 +265,12 @@ class MainGui(qtw.QMainWindow):
         self.exportPath = Path(EXPORT_PATH)
         self.exampleAmount = NUM_EXAMPLES
         self.workerLogPath = Path(WORKER_LOG_PATH)
+        self.lines = SETTINGS.settings.lines
+        self.gestureThread = qtc.QThread(self)
+        self.signRecognizerNoLines = GestureRecognizerWithoutLinesWorker(MODEL_PATH)
+        self.signRecognizerNoLines.moveToThread(self.gestureThread)
+        self.gestureThread.finished.connect(self.signRecognizerNoLines.deleteLater)
+        self.gestureThread.start()
         self._logFilePos = 0
         self.workerLogTimer = qtc.QTimer()
         self.workerLogTimer.timeout.connect(self.readWorkerLogs)
@@ -226,12 +302,14 @@ class MainGui(qtw.QMainWindow):
         self.translatorStatusOutput.setReadOnly(True)
         self.statusOutput = qtw.QTextEdit()
         self.statusOutput.setReadOnly(True)
-        self.stdoutRedirector = TextRedirector(self.translatorStatusOutput)
-        self.stderrRedirector = TextRedirector(self.translatorStatusOutput)
+        self.stdoutRedirector2 = TranslatorTextRedirector(self.translatorStatusOutput)
+        self.stderrRedirector2 = TranslatorTextRedirector(self.translatorStatusOutput)
         self.stdoutRedirector = TextRedirector(self.statusOutput)
         self.stderrRedirector = TextRedirector(self.statusOutput)
         sys.stdout = self.stdoutRedirector
         sys.stderr = self.stderrRedirector
+        sys.stdout = self.stdoutRedirector2
+        sys.stderr = self.stderrRedirector2
         self.frame = None
         self.tabs.addTab(self.translatorTabUI(), "Translator")
         self.tabs.addTab(self.modelMakerTabUI(), "Model Maker")
@@ -246,7 +324,9 @@ class MainGui(qtw.QMainWindow):
         self.frameTimer.timeout.connect(self.updateFrame)
         self.frameTimer.start(16)
         self.whisperWorker = WhisperWorker()
+        self.signRecognizerNoLines.frameReady.connect(self.translatorCameraView.setPixmap)
         self.whisperWorker.textReady.connect(self.updateTranscription)
+        self.frameForGesture.connect(self.signRecognizerNoLines.processFrame)
         if self.cap:
             self.launchCameraThread()
             self.updateFrame()
@@ -263,9 +343,17 @@ class MainGui(qtw.QMainWindow):
         self.audioRecordBtnStatusLabel = qtw.QLabel
         self.translatorTabLayout.addWidget(self.audioRecordBtn, 0, 1)
         self.translatorStatusFrame = qtw.QWidget()
-        self.translatorStatusLayout.addWidget(self.statusOutput)
+        self.translatorStatusLayout.addWidget(self.translatorStatusOutput)
         self.translatorStatusFrame.setLayout(self.translatorStatusLayout)
         self.translatorTabLayout.addWidget(self.translatorStatusFrame, 1, 0)
+        self.datasetPathLabel = qtw.QLabel(f"Log Path: {WORKER_LOG_PATH}\n"
+                                           f"Current Model Loaded Model: {MODEL_PATH}")
+        self.datasetPathLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.datasetPathLabel.setStyleSheet("color: gray; font-size: 11px;")
+        self.datasetPathLabel.setToolTip("This is where gesture image data is stored")
+        self.datasetPathLabel.mousePressEvent = lambda e: os.startfile(DATASET_PATH)
+        self.datasetPathLabel.setCursor(qtc.Qt.CursorShape.PointingHandCursor)
+        self.translatorTabLayout.addWidget(self.datasetPathLabel, 4, 0, 1, -1)
         self.audioRecordBtn.setCheckable(True)
         self.audioRecordBtn.clicked.connect(self.toggleAudioRecording)
         return self.translatorTab
@@ -299,7 +387,7 @@ class MainGui(qtw.QMainWindow):
         self.deleteGestureBtn = qtw.QPushButton("Delete Gesture",)
         self.gestureControlTreeBtnLayout.addWidget(self.deleteGestureBtn, 2)
         self.deleteGestureBtn.clicked.connect(self.gestureSelectedCheck)
-        self.statusLayout.addWidget(self.translatorStatusOutput)
+        self.statusLayout.addWidget(self.statusOutput)
         self.statusFrame = qtw.QWidget()
         self.startCaptureBtn = qtw.QPushButton("Start Capture")
         self.modelMakerTabLayout.addWidget(self.startCaptureBtn, 0, 0)
@@ -347,7 +435,8 @@ class MainGui(qtw.QMainWindow):
         self.outerGestureControlTreeBtnLayout.addWidget(self.gestureControlTreeLabel, 0)
         self.outerGestureControlTreeBtnLayout.addLayout(self.gestureControlTreeBtnLayout, 1)
         self.treeAndCameraLayout.addLayout(self.outerGestureControlTreeBtnLayout)
-        self.treeAndCameraLayout.addLayout(self.cameraViewLayout)
+        #self.treeAndCameraLayout.addLayout(self.cameraViewLayout, 2)
+        self.modelMakerTabLayout.addLayout(self.cameraViewLayout, 1, 2)
         self.outerGestureControlTreeBtnLayout.addLayout(self.gestureControlTreeModelViewAndViewLayout, 2)
         self.modelMakerTabLayout.addLayout(self.treeAndCameraLayout, 1, 0)
         self.modelMakerTabLayout.addWidget(self.datasetPathLabel, 4, 0, 1, -1)
@@ -357,19 +446,35 @@ class MainGui(qtw.QMainWindow):
         self.gestureTreeInfo.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
         self.statusOutput.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
         #self.cameraViewLabel.setAlignment(qtc.Qt.AlignmentFlag.AlignCenter)
-        self.modelMakerTabLayout.setRowStretch(0, 0)
+        #self.modelMakerTabLayout.setRowStretch(0, 0)
         #self.modelMakerTabLayout.setRowStretch(1, 1)
-        self.modelMakerTabLayout.setRowStretch(3, 0)
-        self.modelMakerTabLayout.setRowStretch(4, 0)
-        self.modelMakerTabLayout.setColumnStretch(0, 1)
-        self.treeAndCameraLayout.setStretch(0, 1)
-        self.treeAndCameraLayout.setStretch(1, 2)
+        #self.modelMakerTabLayout.setRowStretch(3, 0)
+        #self.modelMakerTabLayout.setRowStretch(4, 0)
+        #self.modelMakerTabLayout.setColumnStretch(0, 1)
+        #self.treeAndCameraLayout.setStretch(0, 1)
+        #self.treeAndCameraLayout.setStretch(1, 2)
         self.gestureTreeInfo.header().setSectionResizeMode(qtw.QHeaderView.ResizeMode.Stretch)
         self.listGesturesTree.header().setStretchLastSection(True)
         self.statusFrame.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
         self.gestureTreeInfo.header().setSectionResizeMode(qtw.QHeaderView.ResizeMode.Stretch)
         self.listGesturesTree.header().setStretchLastSection(True)
         return self.modelMakerTab
+    
+    def aslmodelshow(self):
+        self.mpHands = mp.solutions.hands
+        self.mpDrawing = mp.solutions.drawing_utils
+        self.hands = self.mpHands.Hands(
+            max_num_hands=2,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+        self.frame = cv2.flip(self.frame, 1)
+        self.rgbFrame = cv2.cvtColor(self.frame, cv2.COLOR_BGR2RGB)
+        self.result = self.hands.process(self.rgbFrame)
+        if self.result.multi_hand_landmarks:
+            for hand_landmarks in self.result.multi_hand_landmarks:
+                self.mpDrawing.draw_landmarks(self.frame, hand_landmarks, self.mpHands.HAND_CONNECTIONS)
+        cv2.imshow('Hand Detection', self.frame)
     
     def stopCamera(self):
         self.frameTimer.stop()
@@ -379,11 +484,11 @@ class MainGui(qtw.QMainWindow):
     def startCamera(self):
         if not self.cap or not self.cap.isOpened():
             self.cap = cv2.VideoCapture(0)
-        self.frameTime.start(16)
+        self.frameTimer.start(16)
     
     def onTabChanged(self, index):
         self.widget = self.tabs.widget(index)
-        if self.widget is self.translatorTab or self.modelMakerTab:
+        if self.widget in (self.translatorTab, self.modelMakerTab):
             if not self.frameTimer.isActive():
                 self.frameTimer.start(16)
                 print("Camera on")
@@ -605,19 +710,17 @@ class MainGui(qtw.QMainWindow):
     def cameraLoop(self):
         while not getattr(self, "stopEvent", threading.Event()).is_set() and self.cap:
             self.ret, self.frame = self.cap.read()
-            if not self.ret:
-                time.sleep(0.01)
-                continue
-            with self.frameLock:
-                self.frame = self.frame    
-            time.sleep(0.01)
+            if self.ret:
+                with self.frameLock:
+                    self.frame = self.frame
     def launchCameraThread(self):
         if getattr(self, "cameraThread", None) and self.cameraThread.is_alive():
             return
         self.stopEvent.clear()
         self.cameraThread = threading.Thread(target=self.cameraLoop, daemon=True)
         self.cameraThread.start()
-        print("Camera started") # put it into the bottom terminal
+        self.logStatus("Camera started")
+
     def updateFrame(self):
         if not hasattr(self, "frameLock"):
             return
@@ -633,9 +736,10 @@ class MainGui(qtw.QMainWindow):
             self.rgb.data, self.w, self.h, self.bytesPerLine, qtg.QImage.Format.Format_RGB888
         )
         self.pixmap = qtg.QPixmap.fromImage(self.qimg)
-        if self.translatorCameraView.isVisible():
-            self.frame = self.frameCopy
-            self.translatorCameraView.setPixmap(self.pixmap)
+        #if self.translatorCameraView.isVisible():
+                #self.signRecognizerNoLines.processFrame(self.frameCopy)
+        if self.translatorCameraView.isVisible() and not self.lines:
+            self.frameForGesture.emit(self.frameCopy)
         if self.cameraView.isVisible():
             self.frame = self.frameCopy
             self.cameraView.setPixmap(self.pixmap)
@@ -784,6 +888,9 @@ class MainGui(qtw.QMainWindow):
         if hasattr(self, "whisperWorker"):
             self.whisperWorker.stop()
             self.whisperWorker.wait()
+        if hasattr(self, "gestureThread"):
+            self.gestureThread.quit()
+            self.gestureThread.wait()
         subprocess.Popen(["docker-compose", "down", "-v"], cwd=Path(__file__).parent.parent.parent / "deploy")
         qtw.QApplication.quit()
 if __name__ == "__main__":
