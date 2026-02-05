@@ -126,7 +126,6 @@ class WhisperWorker(qtc.QThread):
         self.lastText = ""
         self.running = True
         self.mic = sc.default_microphone()
-        self.logMessage.emit("Loading Whisper model...", LogLevel.INFO)
         self.model = WhisperModel("small", device="cpu", compute_type="int8")
         try:
             Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
@@ -145,6 +144,7 @@ class WhisperWorker(qtc.QThread):
         return "\n".join(seg.text for seg in segments)
 
     def run(self):
+        self.logMessage.emit("Loading Whisper model...", LogLevel.INFO)
         recorded = np.zeros((0, 1), dtype=np.float32)
         while self.running:
             with self.mic.recorder(samplerate=SAMPLE_RATE, channels=1) as recorder:
@@ -215,12 +215,15 @@ class AspectRatioWidget(qtw.QWidget):
         self.painter.end()
 
 class GestureRecognizerWithoutLinesWorker(qtc.QObject):
-    frameReady = qtc.pyqtSignal(qtg.QPixmap)
+    #frameReady = qtc.pyqtSignal(qtg.QPixmap)
     gestureRecognized = qtc.pyqtSignal(str, float)
     def __init__(self, MODEL_PATH: str, parent=None):
         super().__init__(parent)
         self.modelPath = str(MODEL_PATH)
         self.running = False
+        self.enabled = True
+        self.lastProcessTime = 0.0
+        self.minInterval = 0.10
         self.baseOptions = python.BaseOptions(model_asset_path=str(self.modelPath))
         self.options = vision.GestureRecognizerOptions(base_options=self.baseOptions, runningMode = vision.RunningMode.VIDEO)
         self.recognizer = vision.GestureRecognizer.create_from_options(self.options)
@@ -228,11 +231,14 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
         
     @qtc.pyqtSlot(np.ndarray)
     def processFrame(self, frame):
-        if self.gestureName != self.lastGesture:
-            self.lastGesture = self.gestureName
-            self.gestureRecognized.emit(self.gestureName, self.score)
+        now = time.time()
+        if not self.enabled:
+            return
+        if now - self.lastProcessTime < self.minInterval:
+            return
         if frame is None:
             return
+        self.lastProcessTime = now
         frame = cv2.flip(frame, 1)
         rgbFrame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mpImage = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgbFrame)
@@ -262,7 +268,9 @@ class MainGui(qtw.QMainWindow):
         self.width = SETTINGS.app.width
         self.height = SETTINGS.app.height
         self.setWindowTitle(self.title)
-        self.logStatus("Window size:", self.width, self.height)
+        self.runtimeLogger = UILogger("runtime")
+        self.workerLogger = UILogger("worker")
+        self.logStatus(f"Window size: {self.width}x{self.height}", LogLevel.DEBUG)
         self.resize(self.width, self.height)
         if self.width <= 0 or self.height <= 0:
             self.resize(1280, 800)
@@ -311,15 +319,13 @@ class MainGui(qtw.QMainWindow):
         #self.translatorStatusOutput.setReadOnly(True)
         #self.statusOutput = qtw.QTextEdit()
         #self.statusOutput.setReadOnly(True)
-        self.runtimeLogger = UILogger("runtime")
-        self.workerLogger = UILogger("worker")
         #self.stdoutRedirector2 = TranslatorTextRedirector(self.translatorStatusOutput)
         #self.stderrRedirector2 = TranslatorTextRedirector(self.translatorStatusOutput)
         #self.stdoutRedirector = TextRedirector(self.statusOutput)
         #self.stderrRedirector = TextRedirector(self.statusOutput)
         #sys.stdout = self.stdoutRedirector and self.stdoutRedirector2
         #sys.stderr = self.stderrRedirector and self.stderrRedirector2
-        self.flushTimer.start(100)
+        #self.flushTimer.start(100)
         self.statusOutput = LogViewer(maxLines=400)
         self.translatorStatusOutput = LogViewer(maxLines=400)
         self.runtimeLogger.logReady.connect(self.statusOutput.enqueue)
@@ -349,7 +355,7 @@ class MainGui(qtw.QMainWindow):
         self.wordTimer = qtc.QTimer()
         self.wordTimer.timeout.connect(self.checkWordBoundary)
         self.wordTimer.start(200)
-        self.signRecognizerNoLines.frameReady.connect(self.translatorCameraView.setPixmap)
+        #self.signRecognizerNoLines.frameReady.connect(self.translatorCameraView.setPixmap)
         self.whisperWorker.textReady.connect(self.updateTranscription)
         self.frameForGesture.connect(self.signRecognizerNoLines.processFrame)
         self.letterBuffer = []
@@ -540,40 +546,30 @@ class MainGui(qtw.QMainWindow):
         if self.widget in (self.translatorTab, self.modelMakerTab):
             if not self.frameTimer.isActive():
                 self.frameTimer.start(33)
-                self.logStatus("Camera on")
+                self.logStatus("Camera on", LogLevel.INFO)
         else:
             self.frameTimer.stop()
-            self.logStatus("Camera Stopped")
+            self.logStatus("Camera Stopped", LogLevel.INFO)
 
     def readWorkerLogs(self):
-        if not self.workerLogPath.exists():
-            return
-        with open(self.workerLogPath, "r", encoding="utf-8") as f:
-            f.seek(self._logFilePos)
-            for line in f:
-                self.line = line.strip()
-                if not self.line:
-                    continue
-                try:
-                    self.entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                self.msg = self.entry.get("message", "")
-                self.level = self.entry.get("level", "info")
-                if self.level == "error":
-                    self.logStatus(f"[Error from Model Training] {self.msg}")
-                if self.level == "warning":
-                    self.logStatus(f"[Warning from Model Training] {self.msg}")
-                if self.level == "error":
-                    self.logStatus("Worker crashed — stopping job")
-                    self.resultCheckTimer.stop()
-                if self.level == "debug":
-                    self.logStatus(f"[Debug Message] {self.msg}")
-                if self.level == "error":
-                    self.errorMenu(message=f"[Error Message from Model Training] {self.msg}")
-                else:
-                    self.logStatus(f"[worker] {self.msg}")
-            self._logFilePos = f.tell()
+        try:
+            with open(WORKER_LOG_PATH, "r") as f:
+                lines = f.readlines()[self.lastWorkerLogLine:]
+                self.lastWorkerLogLine += len(lines)
+            for line in lines:
+                level, msg = self.parseWorkerLogLine(line)
+                self.workerLogger.log(msg, level)
+        except FileNotFoundError:
+            pass
+
+    def parseWorkerLogLine(self, line):
+        if "[ERROR]" in line:
+            return LogLevel.ERROR, line.strip()
+        if "[WARNING]" in line:
+            return LogLevel.WARNING, line.strip()
+        if "[DEBUG]" in line:
+            return LogLevel.DEBUG, line.strip()
+        return LogLevel.INFO, line.strip()
     
     def toggleAudioRecording(self):
         if self.whisperWorker.isRunning():
@@ -634,10 +630,10 @@ class MainGui(qtw.QMainWindow):
         with open(JSON_FILE, "r") as f:
             self.data = json.load(f)
         if isinstance(self.data, dict):
-            self.logStatust("WARNING: gestures.json is not a list — fixing automatically")
+            self.logStatus("WARNING: gestures.json is not a list — fixing automatically", LogLevel.ERROR)
             self.data = [self.data]
         if not isinstance(self.data, list):
-            self.logStatus("ERROR: gestures.json is invalid")
+            self.logStatus("ERROR: gestures.json is invalid", LogLevel.ERROR)
             return []
         return self.data
     
@@ -673,7 +669,7 @@ class MainGui(qtw.QMainWindow):
             self.folder = os.path.join(DATASET_PATH, self.entry["name"])
             self.entry["image_count"] = self.countImages(self.folder)
         self.saveData(self.data)
-        self.logStatus("Image counts updated.")
+        self.logStatus("Image counts updated.", LogLevel.INFO)
     
     def deleteGesture(self, name):
         self.frameTimer.stop()
@@ -691,7 +687,7 @@ class MainGui(qtw.QMainWindow):
         self.gestureDir = Path(DATASET_PATH) / name
         if self.gestureDir.exists():
             shutil.rmtree(self.gestureDir)
-        self.logStatus(f"Deleted gesture '{name}'")
+        self.logStatus(f"Deleted gesture '{name}'", LogLevel.INFO)
         self.name = None
         self.currentGesture = None
         self.capturing = False
@@ -718,7 +714,7 @@ class MainGui(qtw.QMainWindow):
         
     def refreshGestures(self):
         self.loadExistingGestures(orderByName=True)
-        self.logStatus("Refreshed Gesture Tree")
+        self.logStatus("Refreshed Gesture Tree", LogLevel.INFO)
 
     def gestureSelectedCheck(self):
         self.item = self.selectedGesture()
@@ -780,7 +776,7 @@ class MainGui(qtw.QMainWindow):
         self.cap = self.cap
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        self.logStatus(f"Found Camera {self.cap.isOpened()}")
+        self.logStatus(f"Found Camera {self.cap.isOpened()}", LogLevel.INFO)
         self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1) 
         self.stopEvent = threading.Event()
         self.frameLock = threading.Lock()
@@ -799,7 +795,7 @@ class MainGui(qtw.QMainWindow):
         self.stopEvent.clear()
         self.cameraThread = threading.Thread(target=self.cameraLoop, daemon=True)
         self.cameraThread.start()
-        self.logStatus("Camera started")
+        self.logStatus("Camera started", LogLevel.INFO)
 
     def updateFrame(self):
         if not hasattr(self, "frameLock"):
@@ -820,11 +816,12 @@ class MainGui(qtw.QMainWindow):
         self.pixmap = qtg.QPixmap.fromImage(self.qimg)
         #if self.translatorCameraView.isVisible():
                 #self.signRecognizerNoLines.processFrame(self.frameCopy)
-        if self.translatorCameraView.isVisible() and not self.lines:
-            self.now = time.time()
-            if self.now - self._lastGestureTime >= self.gestureInterval:
-                self.frameForGesture.emit(self.frameCopy)
-                self._lastGestureTime = self.now
+        #if self.translatorCameraView.isVisible() and not self.lines:
+        #self.now = time.time()
+        #if self.now - self._lastGestureTime >= self.gestureInterval:
+            #self.frameForGesture.emit(self.frameCopy)
+            #self._lastGestureTime = self.now
+        self.frameForGesture.emit(self.frameCopy)
         if self.cameraView.isVisible():
             self.frame = self.frameCopy
             self.cameraView.setPixmap(self.pixmap)
@@ -852,21 +849,21 @@ class MainGui(qtw.QMainWindow):
             self.startCaptureBtn.setText("Stop Capture")
             self.gestureDir = os.path.join(self.modelDir, self.gesture)
             os.makedirs(self.gestureDir, exist_ok=True)
-            self.logStatus(f"Started Capture for gesture '{self.gesture}'.")
+            self.logStatus(f"Started Capture for gesture '{self.gesture}'.", LogLevel.INFO)
         else:
             self.startCaptureBtn.setText("Start Capture")
             self.updateAllImageCounts()
             self.refreshGestures()
         self.state = "ON" if self.capturing else "OFF"
-        self.logStatus(f"Capture {self.state} for '{self.gesture}' gesture")
+        self.logStatus(f"Capture {self.state} for '{self.gesture}' gesture", LogLevel.INFO)
 
     def visualizeModel(self):
-        self.logStatus(DATASET_PATH)
+        self.logStatus(DATASET_PATH, LogLevel.DEBUG)
         self.labels = []
         for i in os.listdir(DATASET_PATH):
             if os.path.isdir(os.path.join(DATASET_PATH, i)):
                 self.labels.append(i)
-        self.logStatus(self.labels)
+        self.logStatus(self.labels, LogLevel.INFO)
         for self.label in self.labels:
             self.labelDir = os.path.join(DATASET_PATH, self.label)
             self.exampleFilenames = os.listdir(self.labelDir)[:NUM_EXAMPLES]
@@ -893,25 +890,25 @@ class MainGui(qtw.QMainWindow):
             json.dump(self.job, f)
         subprocess.Popen(["docker", "compose", "build", "--no-cache"], cwd=Path(__file__).parent.parent.parent / "deploy")
         subprocess.Popen(["docker", "compose", "up"], cwd=Path(__file__).parent.parent.parent / "deploy")
-        self.logStatus("Started training worker")
+        self.logStatus("Started training worker", LogLevel.INFO)
 
     def trainExportModel(self):
         self.runTraining()
-        self.logStatus("Starting Model Training!")
-        self.logStatus("This may take anywhere from 30 Seconds to 20 Minutes depending on hardware capabilities and amount of images being trained.")
+        self.logStatus("Starting Model Training!", LogLevel.INFO)
+        self.logStatus("This may take anywhere from 30 Seconds to 20 Minutes depending on hardware capabilities and amount of images being trained.", LogLevel.INFO)
         self.resultCheckTimer = qtc.QTimer()
         self.resultCheckTimer.timeout.connect(self.checkWorkerResult)
         self.resultCheckTimer.start(1000)
 
     def toggleDebugLogging(self, state):
         if state == qtc.Qt.CheckState.Checked:
-            self.runtimeLogger.setLevel(LOG_DEBUG)
-            self.workerLogger.setLevel(LOG_DEBUG)
-            self.logStatus("Debug logging enabled", LOG_INFO)
+            self.runtimeLogger.setLevel(LogLevel.DEBUG)
+            self.workerLogger.setLevel(LogLevel.DEBUG)
+            self.logStatus("Debug logging enabled", LogLevel.Info)
         else:
-            self.runtimeLogger.setLevel(LOG_INFO)
-            self.workerLogger.setLevel(LOG_INFO)
-            self.logStatus("Debug logging disabled", LOG_INFO)
+            self.runtimeLogger.setLevel(LogLevel.INFO)
+            self.workerLogger.setLevel(LogLevel.INFO)
+            self.logStatus("Debug logging disabled", LogLevel.INFO)
 
     def checkWorkerResult(self):
         #
@@ -922,7 +919,7 @@ class MainGui(qtw.QMainWindow):
             return
         with open(self.resultPath) as f:
             self.result = json.load(f)
-        self.logStatus(f"Final accuracy: {self.result['accuracy']}")
+        self.logStatus(f"Final accuracy: {self.result['accuracy']}", LogLevel.INFO)
         self.resultCheckTimer.stop()
         self.workerLogTimer.stop()
         subprocess.Popen(["docker", "compose", "down", "-v"], cwd=Path(__file__).parent.parent.parent / "deploy")
