@@ -77,20 +77,61 @@ class LogLevel:
     WARNING = 2
     ERROR = 3
 
+class UILogger(qtc.QObject):
+    logReady = qtc.pyqtSignal(str)
+    def __init__(self, name="app"):
+        super().__init__()
+        self.name = name
+        self.level = 1
+
+    def setLevel(self, level):
+        self.level = level
+
+    def log(self, message, level=1):
+        if level < self.level:
+            return
+        ts = datetime.now().strftime("[%H:%M:%S]")
+        self.logReady.emit(f"{ts} {message}")
+
+class LogViewer(qtw.QTextEdit):
+    def __init__(self, maxLines=500, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.maxLines = maxLines
+        self.lines = []
+        self.flushTimer = qtc.QTimer(self)
+        self.flushTimer.timeout.connect(self.flush)
+        self.flushTimer.start(100)  # 10 FPS UI updates
+        self._pending = []
+
+    def enqueue(self, message):
+        self._pending.append(message)
+
+    def flush(self):
+        if not self._pending:
+            return
+        self.lines.extend(self._pending)
+        self._pending.clear()
+        if len(self.lines) > self.maxLines:
+            self.lines = self.lines[-self.maxLines:]
+        self.setPlainText("\n".join(self.lines))
+        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+
 class WhisperWorker(qtc.QThread):
     textReady = qtc.pyqtSignal(str)
+    logMessage = qtc.pyqtSignal(str, int)
     def __init__(self, parent=None):
         super().__init__(parent)
         self.currentChunkDuration = INITIAL_CHUNK_DURATION
         self.lastText = ""
         self.running = True
         self.mic = sc.default_microphone()
-        self.logStatus("Loading Whisper model...")
+        self.logMessage.emit("Loading Whisper model...", LogLevel.INFO)
         self.model = WhisperModel("small", device="cpu", compute_type="int8")
         try:
             Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
         except Exception as e:
-            self.logStatus("Diarization disabled:", e)
+            self.logMessage.emit(f"Diarization disabled: {e}", LogLevel.WARNING)
             self.diarization_pipeline = None
 
     def stop(self):
@@ -179,9 +220,6 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
     def __init__(self, MODEL_PATH: str, parent=None):
         super().__init__(parent)
         self.modelPath = str(MODEL_PATH)
-        if self.gestureName != self.lastGesture:
-            self.lastGesture = self.gestureName
-            self.gestureRecognized.emit(self.gestureName, self.score)
         self.running = False
         self.baseOptions = python.BaseOptions(model_asset_path=str(self.modelPath))
         self.options = vision.GestureRecognizerOptions(base_options=self.baseOptions, runningMode = vision.RunningMode.VIDEO)
@@ -190,6 +228,9 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
         
     @qtc.pyqtSlot(np.ndarray)
     def processFrame(self, frame):
+        if self.gestureName != self.lastGesture:
+            self.lastGesture = self.gestureName
+            self.gestureRecognized.emit(self.gestureName, self.score)
         if frame is None:
             return
         frame = cv2.flip(frame, 1)
@@ -198,84 +239,20 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
         timestamp = int(time.time() * 1000)
         self.result = self.recognizer.recognize_for_video(mpImage, timestamp)
         if self.result.gestures:
-            self.topGesture = self.result.gestures[0][0]
-            self.gestureName = self.topGesture.category_name
-            self.score = self.topGesture.score
-            if self.result.gestures and self.topGesture.score > 0.5:
-                cv2.putText(frame, f"{self.gestureName} ({self.score:.2f})", (30, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        self.h, self.w, self.ch = frame.shape
-        self.bytesPerLine = self.ch * self.w
-        self.qimg = qtg.QImage(frame.data, self.w, self.h, self.bytesPerLine, qtg.QImage.Format.Format_BGR888)
-        self.pixmap = qtg.QPixmap.fromImage(self.qimg)
-        self.frameReady.emit(self.pixmap)
-
-class TextRedirector(qtc.QObject):
-    textWritten = qtc.pyqtSignal(str)
-    def __init__(self, textEdit: qtw.QTextEdit, mirrorToTerminal=True):
-        super().__init__()
-        self.textEdit = textEdit
-        self.mirrorToTerminal = mirrorToTerminal
-        self._stdout = sys.__stdout__
-        self._stderr = sys.__stderr__
-        self._stdout2 = sys.__stdout__
-        self._stderr2 = sys.__stderr__
-        self.textWritten.connect(self.appendText)
-
-    def write(self, message):
-        if not message.strip():
-            return
-        timestamp = datetime.now().strftime("[%H:%M:%S] ")
-        fullMessage = timestamp + message.rstrip()
-        #self.textWritten.emit(fullMessage)
-        self.buffer.append(fullMessage)
-        if self.mirrorToTerminal:
-            self._stdout.write(fullMessage + "\n")
-            self._stdout2.write(fullMessage + "\n")
-            self._stdout.flush()
-            self._stdout2.flush()
-
-    def flushBuffer(self):
-        if not self.buffer:
-            return
-        text = "\n".join(self.buffer)
-        self.buffer.clear()
-        self.textEdit.append(text)
-
-    def flush(self):
-        pass
-    @qtc.pyqtSlot(str)
-    def appendText(self, message):
-        self.textEdit.append(message)
-
-class TranslatorTextRedirector(qtc.QObject):
-    textWritten = qtc.pyqtSignal(str)
-    def __init__(self, textEdit: qtw.QTextEdit, mirrorToTerminal=True):
-        super().__init__()
-        self.textEdit = textEdit
-        self.mirrorToTerminal = mirrorToTerminal
-        self._stdout = sys.__stdout__
-        self._stderr = sys.__stderr__
-        self._stdout2 = sys.__stdout__
-        self._stderr2 = sys.__stderr__
-        self.textWritten.connect(self.appendText)
-
-    def write(self, message):
-        if not message.strip():
-            return
-        timestamp = datetime.now().strftime("[%H:%M:%S] ")
-        fullMessage = timestamp + message.rstrip()
-        self.textWritten.emit(fullMessage)
-        if self.mirrorToTerminal:
-            self._stdout.write(fullMessage + "\n")
-            self._stdout2.write(fullMessage + "\n")
-            self._stdout.flush()
-            self._stdout2.flush()
-    def flush(self):
-        pass
-    @qtc.pyqtSlot(str)
-    def appendText(self, message):
-        self.textEdit.append(message)
+            top = self.result.gestures[0][0]
+            if top.score > 0.5:
+                if top.category_name != self.lastGesture:
+                    self.lastGesture = top.category_name
+                    self.gestureRecognized.emit(top.category_name, top.score)
+            #self.gestureName = top.category_name
+            #self.score = top.score
+            #if self.result.gestures and self.topGesture.score > 0.5:
+#                cv2.putText(frame, f"{self.gestureName} ({self.score:.2f})", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        #self.h, self.w, self.ch = frame.shape
+        #self.bytesPerLine = self.ch * self.w
+        #self.qimg = qtg.QImage(frame.data, self.w, self.h, self.bytesPerLine, qtg.QImage.Format.Format_BGR888)
+        #self.pixmap = qtg.QPixmap.fromImage(self.qimg)
+        #self.frameReady.emit(self.pixmap)
 
 class MainGui(qtw.QMainWindow):
     frameForGesture = qtc.pyqtSignal(np.ndarray)
@@ -330,20 +307,23 @@ class MainGui(qtw.QMainWindow):
         self.setCentralWidget(self.centralWid)
         self.tabs = qtw.QTabWidget()
         self.quitTab = qtw.QWidget()
-        self.translatorStatusOutput = qtw.QTextEdit()
-        self.translatorStatusOutput.setReadOnly(True)
-        self.statusOutput = qtw.QTextEdit()
-        self.statusOutput.setReadOnly(True)
-        self.stdoutRedirector2 = TranslatorTextRedirector(self.translatorStatusOutput)
-        self.stderrRedirector2 = TranslatorTextRedirector(self.translatorStatusOutput)
-        self.stdoutRedirector = TextRedirector(self.statusOutput)
-        self.stderrRedirector = TextRedirector(self.statusOutput)
-        sys.stdout = self.stdoutRedirector and self.stdoutRedirector2
-        sys.stderr = self.stderrRedirector and self.stderrRedirector2
-        self.buffer = []
-        self.flushTimer = qtc.QTimer()
-        self.flushTimer.timeout.connect(self.flushBuffer)
+        #self.translatorStatusOutput = qtw.QTextEdit()
+        #self.translatorStatusOutput.setReadOnly(True)
+        #self.statusOutput = qtw.QTextEdit()
+        #self.statusOutput.setReadOnly(True)
+        self.runtimeLogger = UILogger("runtime")
+        self.workerLogger = UILogger("worker")
+        #self.stdoutRedirector2 = TranslatorTextRedirector(self.translatorStatusOutput)
+        #self.stderrRedirector2 = TranslatorTextRedirector(self.translatorStatusOutput)
+        #self.stdoutRedirector = TextRedirector(self.statusOutput)
+        #self.stderrRedirector = TextRedirector(self.statusOutput)
+        #sys.stdout = self.stdoutRedirector and self.stdoutRedirector2
+        #sys.stderr = self.stderrRedirector and self.stderrRedirector2
         self.flushTimer.start(100)
+        self.statusOutput = LogViewer(maxLines=400)
+        self.translatorStatusOutput = LogViewer(maxLines=400)
+        self.runtimeLogger.logReady.connect(self.statusOutput.enqueue)
+        self.workerLogger.logReady.connect(self.translatorStatusOutput.enqueue)
         #print(self.stdoutRedirector)
         #print(self.stdoutRedirector2)
         #print(self.translatorStatusOutput)
@@ -379,6 +359,7 @@ class MainGui(qtw.QMainWindow):
         self._lastGestureTime = 0.0
         self.signRecognizerNoLines.gestureRecognized.connect(self.updateASLTranscription)
         self.wordSet = set()
+        self.whisperWorker.logMessage.connect(self.logStatus)
         if not WORDLIST.exists():
             raise FileNotFoundError(f"Word list not found: {WORDLIST}")
         with WORDLIST.open("r", encoding="utf-8") as f:
@@ -629,9 +610,9 @@ class MainGui(qtw.QMainWindow):
         self.lastGestureTime = None
 
     @qtc.pyqtSlot(str, float)
-    def updateASLTranscription(self, name):
-        self.now = time.time()
-        self.lastGestureTime = self.now
+    def updateASLTranscription(self, name, score):
+        self.currentGesture = name
+        self.lastGestureTime = time.time()
         self.letterBuffer.append(name)
         
     def scoreTrascription(self, score, name):
@@ -834,6 +815,8 @@ class MainGui(qtw.QMainWindow):
         self.qimg = qtg.QImage(
             self.rgb.data, self.w, self.h, self.bytesPerLine, qtg.QImage.Format.Format_RGB888
         )
+        if self.currentGesture:
+            cv2.putText(self.frameCopy, f"{self.currentGesture}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
         self.pixmap = qtg.QPixmap.fromImage(self.qimg)
         #if self.translatorCameraView.isVisible():
                 #self.signRecognizerNoLines.processFrame(self.frameCopy)
@@ -920,6 +903,16 @@ class MainGui(qtw.QMainWindow):
         self.resultCheckTimer.timeout.connect(self.checkWorkerResult)
         self.resultCheckTimer.start(1000)
 
+    def toggleDebugLogging(self, state):
+        if state == qtc.Qt.CheckState.Checked:
+            self.runtimeLogger.setLevel(LOG_DEBUG)
+            self.workerLogger.setLevel(LOG_DEBUG)
+            self.logStatus("Debug logging enabled", LOG_INFO)
+        else:
+            self.runtimeLogger.setLevel(LOG_INFO)
+            self.workerLogger.setLevel(LOG_INFO)
+            self.logStatus("Debug logging disabled", LOG_INFO)
+
     def checkWorkerResult(self):
         #
         # check this code to see what it does and if it needs to be changed
@@ -963,9 +956,12 @@ class MainGui(qtw.QMainWindow):
         #
         self.settingsTab = qtw.QWidget()
         self.settingsTabLayout = qtw.QGridLayout()
-        self.setTemplate = qtw.QLineEdit()
-        self.setTemplate.setPlaceholderText("Set: ")
-        self.settingsTabLayout.addWidget(self.setTemplate, 0, 0)
+        self.debugCheckbox = qtw.QCheckBox("Enable debug logging")
+        self.settingsTabLayout.addWidget(self.debugCheckbox, 0, 0)
+        self.debugCheckbox.stateChanged.connect(self.toggleDebugLogging)
+        #self.setTemplate = qtw.QLineEdit()
+        #self.setTemplate.setPlaceholderText("Set: ")
+        #self.settingsTabLayout.addWidget(self.setTemplate, 0, 0)
         #self.setTemplate.setCheckable(True)
         #self.setTemplate.clicked.connect(self.setTemplater)
         self.settingsTab.setLayout(self.settingsTabLayout)
@@ -979,9 +975,7 @@ class MainGui(qtw.QMainWindow):
     def errorMenu(self, message):
         qtw.QMessageBox.critical(self, "Error: ", message, qtw.QMessageBox.StandardButton.Ok)
     def logStatus(self, message, level=LogLevel.INFO):
-        if level < self.logLevel:
-            return
-        print(message)
+        self.runtimeLogger.log(message, level)
     def closeProgram(self):
         if hasattr(self, "stopEvent"):
             self.stopEvent.set()
