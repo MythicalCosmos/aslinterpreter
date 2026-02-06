@@ -393,7 +393,7 @@ class MainGui(qtw.QMainWindow):
         self.translatorStatusFrame = qtw.QWidget()
         self.translatorStatusLayout.addWidget(self.translatorStatusOutput)
         self.translatorStatusFrame.setLayout(self.translatorStatusLayout)
-        #self.translatorTabLayout.addWidget(self.runtimeLogger, 1, 0)
+        self.translatorTabLayout.addWidget(self.translatorStatusFrame, 1, 0)
         self.datasetPathLabel = qtw.QLabel(f"Log Path: {WORKER_LOG_PATH}\n"
                                            f"Current Model Loaded Model: {MODEL_PATH}")
         self.datasetPathLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -475,7 +475,7 @@ class MainGui(qtw.QMainWindow):
         self.listGesturesTree.setRootIsDecorated(False)
         self.gestureControlTreeModelViewAndViewLayout.addWidget(self.listGesturesTree, 1)
         self.gestureControlTreeModelViewAndViewLayout.addWidget(self.gestureTreeInfo, 3)
-        self.statusLayout.addWidget(self.statusOutput, 1, 0)
+        self.statusLayout.addWidget(self.statusOutput, 1)
         #self.listGesturesTree.itemClicked.connect(self.whichGestureSelected)
         self.gestureData = []
         self.gestureControlTreeLabel = qtw.QLabel("Gesture Management")
