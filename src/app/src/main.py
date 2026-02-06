@@ -225,7 +225,7 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
         self.lastProcessTime = 0.0
         self.minInterval = 0.10
         self.baseOptions = python.BaseOptions(model_asset_path=str(self.modelPath))
-        self.options = vision.GestureRecognizerOptions(base_options=self.baseOptions, runningMode = vision.RunningMode.VIDEO)
+        self.options = vision.GestureRecognizerOptions(base_options=self.baseOptions, running_mode = vision.RunningMode.VIDEO)
         self.recognizer = vision.GestureRecognizer.create_from_options(self.options)
         self.lastGesture = None
         
@@ -377,6 +377,7 @@ class MainGui(qtw.QMainWindow):
     def translatorTabUI(self):
         self.translatorTab = qtw.QWidget()
         self.translatorTabLayout = qtw.QGridLayout()
+        #self.translatorTabLayout.addWidget(self.translatorStatusOutput, 1, 0)
         self.translatorTabLayout.addLayout(self.translatorCameraViewLayout, 0, 0)
         self.translatorTab.setLayout(self.translatorTabLayout)
         self.transcriptionOutput = qtw.QTextEdit()
@@ -392,7 +393,7 @@ class MainGui(qtw.QMainWindow):
         self.translatorStatusFrame = qtw.QWidget()
         self.translatorStatusLayout.addWidget(self.translatorStatusOutput)
         self.translatorStatusFrame.setLayout(self.translatorStatusLayout)
-        self.translatorTabLayout.addWidget(self.translatorStatusFrame, 1, 0)
+        self.translatorTabLayout.addWidget(self.runtimeLogger, 1, 0)
         self.datasetPathLabel = qtw.QLabel(f"Log Path: {WORKER_LOG_PATH}\n"
                                            f"Current Model Loaded Model: {MODEL_PATH}")
         self.datasetPathLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -434,7 +435,7 @@ class MainGui(qtw.QMainWindow):
         self.deleteGestureBtn = qtw.QPushButton("Delete Gesture",)
         self.gestureControlTreeBtnLayout.addWidget(self.deleteGestureBtn, 2)
         self.deleteGestureBtn.clicked.connect(self.gestureSelectedCheck)
-        self.statusLayout.addWidget(self.statusOutput)
+        #self.statusLayout.addWidget(self.workerLogger)
         self.statusFrame = qtw.QWidget()
         self.startCaptureBtn = qtw.QPushButton("Start Capture")
         self.modelMakerTabLayout.addWidget(self.startCaptureBtn, 0, 0)
@@ -474,6 +475,7 @@ class MainGui(qtw.QMainWindow):
         self.listGesturesTree.setRootIsDecorated(False)
         self.gestureControlTreeModelViewAndViewLayout.addWidget(self.listGesturesTree, 1)
         self.gestureControlTreeModelViewAndViewLayout.addWidget(self.gestureTreeInfo, 3)
+        self.statusLayout.addWidget(self.statusOutput, 1, 0)
         #self.listGesturesTree.itemClicked.connect(self.whichGestureSelected)
         self.gestureData = []
         self.gestureControlTreeLabel = qtw.QLabel("Gesture Management")
@@ -512,7 +514,7 @@ class MainGui(qtw.QMainWindow):
     def checkWordBoundary(self):
         if not self.letterBuffer or not self.lastGestureTime:
             return
-        if time.time() - self.lastGestureTime >= self.WORD_GAP_TIME:
+        if time.time() - self.lastGestureTime >= self.gapBetweenSignRecognition:
             self.flushLetterBuffer()
     
     def aslmodelshow(self):
@@ -808,12 +810,12 @@ class MainGui(qtw.QMainWindow):
         self.rgb = cv2.cvtColor(self.frameCopy, cv2.COLOR_BGR2RGB)
         self.h, self.w, self.ch = self.rgb.shape
         self.bytesPerLine = self.ch * self.w
-        self.qimg = qtg.QImage(
-            self.rgb.data, self.w, self.h, self.bytesPerLine, qtg.QImage.Format.Format_RGB888
-        )
         if self.currentGesture:
             cv2.putText(self.frameCopy, f"{self.currentGesture}", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-        self.pixmap = qtg.QPixmap.fromImage(self.qimg)
+        rgb = cv2.cvtColor(self.frameCopy, cv2.COLOR_BGR2RGB)
+        h, w, ch = rgb.shape
+        qimg = qtg.QImage(rgb.data, w, h, ch * w, qtg.QImage.Format.Format_RGB888)
+        self.pixmap = qtg.QPixmap.fromImage(qimg)
         #if self.translatorCameraView.isVisible():
                 #self.signRecognizerNoLines.processFrame(self.frameCopy)
         #if self.translatorCameraView.isVisible() and not self.lines:
@@ -821,10 +823,11 @@ class MainGui(qtw.QMainWindow):
         #if self.now - self._lastGestureTime >= self.gestureInterval:
             #self.frameForGesture.emit(self.frameCopy)
             #self._lastGestureTime = self.now
-        self.frameForGesture.emit(self.frameCopy)
         if self.cameraView.isVisible():
-            self.frame = self.frameCopy
             self.cameraView.setPixmap(self.pixmap)
+        if self.translatorCameraView.isVisible():
+            self.frameForGesture.emit(self.frameCopy)
+            self.translatorCameraView.setPixmap(self.pixmap)
         if self.capturing and self.currentGesture:
             self.gesture = self.currentGesture
             self.gestureDir = self.modelDir / self.gesture
