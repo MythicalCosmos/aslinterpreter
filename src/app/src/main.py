@@ -489,7 +489,7 @@ class MainGui(qtw.QMainWindow):
         self.datasetPathLabel.setCursor(qtc.Qt.CursorShape.PointingHandCursor)
         self.translatorCameraViewLayout.addWidget(self.translatorCameraLabel, 0)
         self.translatorCameraViewLayout.addWidget(self.translatorCameraView, 1)
-        self.translatorTabLayout.addLayout(self.translatorCameraViewLayout, 0, 0)
+        self.translatorTabLayout.addLayout(self.translatorCameraViewLayout, 0, 0, 2, 1)
         self.translatorTab.setLayout(self.translatorTabLayout)
         self.signedOutputTranscriptionLayout.addWidget(self.signedOutputTranscriptionLabel, 0)
         self.signedOutputTranscriptionLayout.addWidget(self.aslTranscriptionOutput, 1)
@@ -505,7 +505,7 @@ class MainGui(qtw.QMainWindow):
         self.translatorStatusLayout.addWidget(self.translatorStatusOutputLabel, 0)
         self.translatorStatusLayout.addWidget(self.translatorStatusOutput, 1)
         self.translatorStatusFrame.setLayout(self.translatorStatusLayout)
-        self.translatorTabLayout.addWidget(self.translatorStatusFrame, 1, 0, 2, 1)
+        self.translatorTabLayout.addWidget(self.translatorStatusFrame, 2, 0, 1, 1)
         self.translatorTabLayout.addWidget(self.datasetPathLabel, 4, 0, 1, -1)
         self.audioRecordBtn.setCheckable(True)
         self.audioRecordBtn.clicked.connect(self.toggleAudioRecording)
@@ -1104,6 +1104,22 @@ class MainGui(qtw.QMainWindow):
             self.gestureThread.wait()
         subprocess.Popen(["docker-compose", "down", "-v"], cwd=Path(__file__).parent.parent.parent / "deploy")
         qtw.QApplication.quit()
+
+def quitProgram(self):
+    if hasattr(self, "stopEvent"):
+        self.stopEvent.set()
+    if hasattr(self, "cameraThread") and self.cameraThread:
+        self.cameraThread.join(timeout=1)
+    if hasattr(self, "cap") and self.cap:
+        self.cap.release()
+    if hasattr(self, "whisperWorker"):
+        self.whisperWorker.stop()
+        self.whisperWorker.wait()
+    if hasattr(self, "gestureThread"):
+        self.gestureThread.quit()
+        self.gestureThread.wait()
+    subprocess.Popen(["docker-compose", "down", "-v"], cwd=Path(__file__).parent.parent.parent / "deploy")
+    qtw.QApplication.quit()
 
 if __name__ == "__main__":
     app = qtw.QApplication(sys.argv)
