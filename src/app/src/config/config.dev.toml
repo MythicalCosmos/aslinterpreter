@@ -1,8 +1,12 @@
+[version]
+version = "0.9.6"
+
 [app]
 name = "Asl to English Translator"
 environment = "development"
 width = "1280"
-height= "800"
+height = "800"
+log_level = 1
 
 [api]
 base_url = "http://localhost:8080"
@@ -16,7 +20,13 @@ sam_rate = 16000
 init_chunk_der = 8.0
 min_chunk_der = 2.0
 chunk_dec = 1.0
-lines = "false"
+lines = false
+confidence_threshold = 0.75
+autocorrect = true
+autocorrect_threshold = 0.85
+word_gap = 1.0
+preview_toggle = true
+confidence_toggle = true
 
 [env]
 hf_token = "hf_IxRemcmOXbUwQaONBIRLqjzsoQRWhJFVJae"

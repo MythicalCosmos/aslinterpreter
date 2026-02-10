@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from config.loader import load_settings
+from config.loader import loadSettings
 #
 #
 # Fuck you script
@@ -44,32 +44,40 @@ import shutil
 import time
 import sys
 import cv2
+from difflib import get_close_matches
 import re
 import os 
-SETTINGS = load_settings()
-HF_TOKEN = SETTINGS.env.hf_token
+CONFIG_FILE = Path(__file__).parent.parent.parent / "app/src/config/config.dev.toml"
+LOAD_SETTINGS = loadSettings()
+HF_TOKEN = LOAD_SETTINGS.env.hf_token
+VERSION = LOAD_SETTINGS.version.version
 SHARED = Path(__file__).parent.parent.parent / "shared"
 DB_FILE = Path(__file__).parent / "gestures.db"
 DATASET_PATH = Path(__file__).parent.parent.parent / "shared/dataset"
 EXPORT_PATH = Path(__file__).parent.parent.parent / "shared/exports"
-WORKER_LOG_PATH = Path(__file__).parent.parent.parent / "shared/logs/worker.log"
+WORKER_LOG_PATH = Path(__file__).parent.parent.parent / "shared/logs/worker.log.json"
 MODEL_PATH = Path(__file__).parent.parent.parent / "deploy/gestures.task"
 WORDLIST = Path(__file__).parent.parent.parent / "deploy/words.txt"
 #EXPORT_PATH.mkdir(parents=True, exist_ok=True)
 #DATASET_PATH.mkdir(parents=True, exist_ok=True)
-MODEL_NAME = SETTINGS.gestures.gesture_model
+MODEL_NAME = LOAD_SETTINGS.gestures.gesture_model
 CAMERA_INDEX = 0
-NUM_EXAMPLES = SETTINGS.settings.examples
+NUM_EXAMPLES = LOAD_SETTINGS.settings.examples
 CONFIG_PATH = None
 JSON_FILE = Path(__file__).parent.parent.parent / "shared/gestures.json"
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 BASE_DATA = {
     "name": "", "image_count": ""
 }
-SAMPLE_RATE = SETTINGS.settings.sam_rate
-INITIAL_CHUNK_DURATION = SETTINGS.settings.init_chunk_der
-MIN_CHUNK_DURATION = SETTINGS.settings.min_chunk_der
-CHUNK_DECREMENT = SETTINGS.settings.chunk_dec
+SAMPLE_RATE = LOAD_SETTINGS.settings.sam_rate
+INITIAL_CHUNK_DURATION = LOAD_SETTINGS.settings.init_chunk_der
+MIN_CHUNK_DURATION = LOAD_SETTINGS.settings.min_chunk_der
+CHUNK_DECREMENT = LOAD_SETTINGS.settings.chunk_dec
+CONFIDENCE_THRESHOLD = LOAD_SETTINGS.settings.confidence_threshold
+WORD_GAP = LOAD_SETTINGS.settings.word_gap
+AUTOCORRECT_TOGGLE = LOAD_SETTINGS.settings.autocorrect
+AUTOCORRECT_THRESHOLD = LOAD_SETTINGS.settings.autocorrect_threshold
+LOG_LEVEL = LOAD_SETTINGS.app.log_level
 
 class LogLevel:
     DEBUG = 0
@@ -82,19 +90,25 @@ class UILogger(qtc.QObject):
     def __init__(self, name="app"):
         super().__init__()
         self.name = name
-        self.level = 1
 
-    def setLevel(self, level):
+    def setLevel(self):
+        self.level = LOG_LEVEL
+
+    def log(self, message, level):
         self.level = level
-
-    def log(self, message, level=1):
-        if level < self.level:
-            return
+        if self.level == 0:
+            self.levelText = "Debug"
+        if self.level == 1:
+            self.levelText = "Info"
+        if self.level == 2:
+            self.levelText = "Warning"
+        if self.level == 3:
+            self.levelText = "Error"
         ts = datetime.now().strftime("[%H:%M:%S]")
-        self.logReady.emit(f"{ts} {message}")
+        self.logReady.emit(f"{self.levelText} {ts} {message}")
 
 class LogViewer(qtw.QTextEdit):
-    def __init__(self, maxLines=500, parent=None):
+    def __init__(self, maxLines=1500, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
         self.maxLines = maxLines
@@ -102,20 +116,73 @@ class LogViewer(qtw.QTextEdit):
         self.flushTimer = qtc.QTimer(self)
         self.flushTimer.timeout.connect(self.flush)
         self.flushTimer.start(100)  # 10 FPS UI updates
-        self._pending = []
+        self.pending = []
 
     def enqueue(self, message):
-        self._pending.append(message)
+        self.pending.append(message)
 
     def flush(self):
-        if not self._pending:
+        if not self.pending:
             return
-        self.lines.extend(self._pending)
-        self._pending.clear()
+        self.lines.extend(self.pending)
+        self.pending.clear()
         if len(self.lines) > self.maxLines:
             self.lines = self.lines[-self.maxLines:]
         self.setPlainText("\n".join(self.lines))
         self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+
+class WordDecoder:
+    def __init__(self, wordSet):
+        #self.config = config
+        self.wordSet = wordSet
+        self.buffer = []
+        self.lastTime = None
+
+    def push(self, letter, timestamp):
+        self.buffer.append(letter)
+        self.lastTime = timestamp
+
+    def addLetter(self, letter, t=None):
+        t = t or time.time()
+        self.lastTime = t
+        self.buffer.append(letter)
+        return " ".join(self.buffer)  # preview
+
+    def shouldFlush(self):
+        return (
+            self.buffer and
+            self.lastTime and
+            time.time() - self.lastTime >= WORD_GAP
+        )
+
+    def wordConfidence(self, word, maxLen=12):
+        if word not in self.wordSet:
+            return 0.0
+        return 0.6 + 0.4 * min(len(word) / maxLen, 1.0)
+
+    def autocorrect(self, word):
+        matches = get_close_matches(word, self.wordSet, n=1, cutoff=0.85)
+        return matches[0] if matches else None
+
+    def flush(self):
+        word = "".join(self.buffer)
+        corrected = self.autocorrect(word)
+
+        if corrected:
+            result = corrected
+            conf = self.wordConfidence(corrected)
+            tag = "auto"
+        else:
+            conf = self.wordConfidence(word)
+            if conf >= CONFIDENCE_THRESHOLD:
+                result = word
+                tag = "word"
+            else:
+                result = " ".join(self.buffer)
+                tag = "letters"
+        self.buffer.clear()
+        self.lastTime = None
+        return result, conf, tag
 
 class WhisperWorker(qtc.QThread):
     textReady = qtc.pyqtSignal(str)
@@ -247,7 +314,7 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
         if self.result.gestures:
             top = self.result.gestures[0][0]
             if top.score > 0.5:
-                if top.category_name != self.lastGesture:
+                if now - self.lastProcessTime > 0.3:
                     self.lastGesture = top.category_name
                     self.gestureRecognized.emit(top.category_name, top.score)
             #self.gestureName = top.category_name
@@ -264,12 +331,22 @@ class MainGui(qtw.QMainWindow):
     frameForGesture = qtc.pyqtSignal(np.ndarray)
     def __init__(self):
         super().__init__()
-        self.title = SETTINGS.app.name
-        self.width = SETTINGS.app.width
-        self.height = SETTINGS.app.height
+        #self.settings = SettingsManager(CONFIG_FILE)
+        self.title = LOAD_SETTINGS.app.name
+        self.width = LOAD_SETTINGS.app.width
+        self.height = LOAD_SETTINGS.app.height
         self.setWindowTitle(self.title)
         self.runtimeLogger = UILogger("runtime")
+        self.translatorLogger = UILogger("translator")
         self.workerLogger = UILogger("worker")
+        self.wordSet = set()
+        if not WORDLIST.exists():
+            raise FileNotFoundError(f"Word list not found: {WORDLIST}")
+        with open(WORDLIST, encoding="utf-8") as f:
+            self.wordSet = {line.strip().upper() for line in f if line.strip()}
+        self.words = f
+        self.decoder = WordDecoder(self.words)
+        self.logStatus("Loaded Word List", LogLevel.INFO)
         self.logStatus(f"Window size: {self.width}x{self.height}", LogLevel.DEBUG)
         self.resize(self.width, self.height)
         if self.width <= 0 or self.height <= 0:
@@ -281,9 +358,10 @@ class MainGui(qtw.QMainWindow):
         self.exportPath = Path(EXPORT_PATH)
         self.exampleAmount = NUM_EXAMPLES
         self.workerLogPath = Path(WORKER_LOG_PATH)
-        self.lines = SETTINGS.settings.lines
+        self.lines = LOAD_SETTINGS.settings.lines
         self.gestureThread = qtc.QThread(self)
         self.signRecognizerNoLines = GestureRecognizerWithoutLinesWorker(MODEL_PATH)
+        self.logStatus("Loaded Model Detection", LogLevel.INFO)
         self.signRecognizerNoLines.moveToThread(self.gestureThread)
         self.gestureThread.finished.connect(self.signRecognizerNoLines.deleteLater)
         self.gestureThread.start()
@@ -298,13 +376,12 @@ class MainGui(qtw.QMainWindow):
         self.capturing = False
         self.currentGesture = None
         os.makedirs(self.modelDir, exist_ok=True)
-        self.workerLogPath = Path(__file__).parent.parent.parent / "shared/logs/worker.log"
+        #self.workerLogPath = Path(__file__).parent.parent.parent / "shared/logs/worker.log"
         self._logFilePos = 0
         self.workerLogTimer = qtc.QTimer()
         #self.workerLogTimer.timeout.connect(self.readWorkerLogs)
         self.workerLogTimer.start(250)
         self.translatorCameraView = AspectRatioWidget(16/9)
-        self.translatorCameraViewLayout.addWidget(self.translatorCameraView)
         self.cameraView = AspectRatioWidget(16/9)
         self.cameraViewLayout.addWidget(self.cameraView)
         self.outLayout = qtw.QVBoxLayout()
@@ -326,10 +403,12 @@ class MainGui(qtw.QMainWindow):
         #sys.stdout = self.stdoutRedirector and self.stdoutRedirector2
         #sys.stderr = self.stderrRedirector and self.stderrRedirector2
         #self.flushTimer.start(100)
-        self.statusOutput = LogViewer(maxLines=400)
-        self.translatorStatusOutput = LogViewer(maxLines=400)
+        self.statusOutput = LogViewer(maxLines=1500)
+        self.translatorStatusOutput = LogViewer(maxLines=1500)
+        self.workerOutput = LogViewer(maxLines=1500)
         self.runtimeLogger.logReady.connect(self.statusOutput.enqueue)
-        self.workerLogger.logReady.connect(self.translatorStatusOutput.enqueue)
+        self.translatorLogger.logReady.connect(self.translatorStatusOutput.enqueue)
+        self.workerLogger.logReady.connect(self.statusOutput.enqueue)
         #print(self.stdoutRedirector)
         #print(self.stdoutRedirector2)
         #print(self.translatorStatusOutput)
@@ -350,8 +429,6 @@ class MainGui(qtw.QMainWindow):
         self.frameTimer.timeout.connect(self.updateFrame)
         self.frameTimer.start(33)
         self.whisperWorker = WhisperWorker()
-        self.scoreTranscriptionOutput = qtw.QTextEdit()
-        self.scoreTranscriptionOutput.setReadOnly(True)
         self.wordTimer = qtc.QTimer()
         self.wordTimer.timeout.connect(self.checkWordBoundary)
         self.wordTimer.start(200)
@@ -364,12 +441,7 @@ class MainGui(qtw.QMainWindow):
         self.gestureInterval = 0.12
         self._lastGestureTime = 0.0
         self.signRecognizerNoLines.gestureRecognized.connect(self.updateASLTranscription)
-        self.wordSet = set()
         self.whisperWorker.logMessage.connect(self.logStatus)
-        if not WORDLIST.exists():
-            raise FileNotFoundError(f"Word list not found: {WORDLIST}")
-        with WORDLIST.open("r", encoding="utf-8") as f:
-            self.wordSet = {line.strip().upper() for line in f if line.strip()}
         if self.cap:
             self.launchCameraThread()
             self.updateFrame()
@@ -377,30 +449,63 @@ class MainGui(qtw.QMainWindow):
     def translatorTabUI(self):
         self.translatorTab = qtw.QWidget()
         self.translatorTabLayout = qtw.QGridLayout()
+        self.scoreTranscriptionOutputLayout = qtw.QVBoxLayout()
+        #self.loggingOutputLayout = qtw.QVBoxLayout()
+        #self.outputPathsLayout = qtw.QVBoxLayout()
+        self.scoreTranscriptionOutput = qtw.QTextEdit()
+        self.scoreTranscriptionOutput.setReadOnly(True)
+        self.audioOutputTranscriptionLayout = qtw.QVBoxLayout()
+        self.signedOutputTranscriptionLayout = qtw.QVBoxLayout()
+        self.translatorCameraLabel = qtw.QLabel("Signing View Camera")
+        self.translatorStatusOutputLabel = qtw.QLabel("Debug Information")
+        #self.outputPathsLabel = qtw.QLabel("Paths")
+        self.audioOutputTranscriptionLabel = qtw.QLabel("Audio Output Transcription")
+        self.signedOutputTranscriptionLabel = qtw.QLabel("Signed Output Transcription")
+        self.scoreTranscriptionOutputLabel = qtw.QLabel("Signed Word Score")
         #self.translatorTabLayout.addWidget(self.translatorStatusOutput, 1, 0)
-        self.translatorTabLayout.addLayout(self.translatorCameraViewLayout, 0, 0)
-        self.translatorTab.setLayout(self.translatorTabLayout)
         self.transcriptionOutput = qtw.QTextEdit()
         self.transcriptionOutput.setReadOnly(True)
         self.aslTranscriptionOutput = qtw.QTextEdit()
         self.aslTranscriptionOutput.setReadOnly(True)
-        self.translatorTabLayout.addWidget(self.transcriptionOutput, 0, 2)
-        self.translatorTabLayout.addWidget(self.aslTranscriptionOutput, 1, 2)
-        #self.translatorTabLayout.addWidget(self.scoresTranscriptionScoresOutput, 2, 2)
-        self.audioRecordBtn = qtw.QPushButton("Record Audio")
-        self.audioRecordBtnStatusLabel = qtw.QLabel
-        self.translatorTabLayout.addWidget(self.audioRecordBtn, 0, 1)
-        self.translatorStatusFrame = qtw.QWidget()
-        self.translatorStatusLayout.addWidget(self.translatorStatusOutput)
-        self.translatorStatusFrame.setLayout(self.translatorStatusLayout)
-        self.translatorTabLayout.addWidget(self.translatorStatusFrame, 1, 0)
         self.datasetPathLabel = qtw.QLabel(f"Log Path: {WORKER_LOG_PATH}\n"
                                            f"Current Model Loaded Model: {MODEL_PATH}")
+        self.translatorStatusFrame = qtw.QWidget()
+        self.audioRecordBtn = qtw.QPushButton("Record Audio")
+        self.audioRecordBtnStatusLabel = qtw.QLabel
+        self.translatorTabLayout.addLayout(self.audioOutputTranscriptionLayout, 1, 2)
+        self.translatorTabLayout.addLayout(self.signedOutputTranscriptionLayout, 2, 2)
+        #self.previewOutput = qtw.QTextEdit()
+        #self.previewOutput.setReadOnly(True)
+        #self.previewOutput.setStyleSheet("color: white; font-style: italic; font-size: 14px;")
+        self.scoreTranscriptionOutput.setText("…")
         self.datasetPathLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.datasetPathLabel.setStyleSheet("color: gray; font-size: 11px;")
+        self.datasetPathLabel.setStyleSheet("color: white; font-style: italic; font-size: 14px;")
+        self.scoreTranscriptionOutput.setStyleSheet("color: white; font-style: italic; font-size: 14px;")
+        self.aslTranscriptionOutput.setStyleSheet("color: white; font-style: italic; font-size: 14px;")
+        self.transcriptionOutput.setStyleSheet("color: white; font-style: italic; font-size: 14px;")
+        self.translatorStatusOutput.setStyleSheet("color: white; font-style: italic; font-size: 14px;")
         self.datasetPathLabel.setToolTip("This is where gesture image data is stored")
         self.datasetPathLabel.mousePressEvent = lambda e: os.startfile(DATASET_PATH)
         self.datasetPathLabel.setCursor(qtc.Qt.CursorShape.PointingHandCursor)
+        self.translatorCameraViewLayout.addWidget(self.translatorCameraLabel, 0)
+        self.translatorCameraViewLayout.addWidget(self.translatorCameraView, 1)
+        self.translatorTabLayout.addLayout(self.translatorCameraViewLayout, 0, 0)
+        self.translatorTab.setLayout(self.translatorTabLayout)
+        self.signedOutputTranscriptionLayout.addWidget(self.signedOutputTranscriptionLabel, 0)
+        self.signedOutputTranscriptionLayout.addWidget(self.aslTranscriptionOutput, 1)
+        self.audioOutputTranscriptionLayout.addWidget(self.audioOutputTranscriptionLabel, 0)
+        self.audioOutputTranscriptionLayout.addWidget(self.transcriptionOutput, 1)
+        #self.outputPathsLayout.addWidget(self.outputPathsLabel, 0)
+        #self.outputPathsLayout.addWidget(self.datasetPathLabel, 1)
+        self.scoreTranscriptionOutputLayout.addWidget(self.scoreTranscriptionOutputLabel, 0)
+        self.scoreTranscriptionOutputLayout.addWidget(self.scoreTranscriptionOutput, 1)
+        self.translatorTabLayout.addLayout(self.scoreTranscriptionOutputLayout, 0, 2)
+        #self.translatorTabLayout.addWidget(self.scoresTranscriptionScoresOutput, 2, 2)
+        self.translatorTabLayout.addWidget(self.audioRecordBtn, 0, 1)
+        self.translatorStatusLayout.addWidget(self.translatorStatusOutputLabel, 0)
+        self.translatorStatusLayout.addWidget(self.translatorStatusOutput, 1)
+        self.translatorStatusFrame.setLayout(self.translatorStatusLayout)
+        self.translatorTabLayout.addWidget(self.translatorStatusFrame, 1, 0, 2, 1)
         self.translatorTabLayout.addWidget(self.datasetPathLabel, 4, 0, 1, -1)
         self.audioRecordBtn.setCheckable(True)
         self.audioRecordBtn.clicked.connect(self.toggleAudioRecording)
@@ -459,7 +564,7 @@ class MainGui(qtw.QMainWindow):
         self.datasetPathLabel = qtw.QLabel(f"Image Storage Path: {DATASET_PATH}\n"
                                            f"Current Model: {self.modelDir}")
         self.datasetPathLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.datasetPathLabel.setStyleSheet("color: gray; font-size: 11px;")
+        self.datasetPathLabel.setStyleSheet("color: white; font-style: italic; font-size: 14px;")
         self.datasetPathLabel.setToolTip("This is where gesture image data is stored")
         self.datasetPathLabel.mousePressEvent = lambda e: os.startfile(DATASET_PATH)
         self.datasetPathLabel.setCursor(qtc.Qt.CursorShape.PointingHandCursor)
@@ -510,12 +615,29 @@ class MainGui(qtw.QMainWindow):
         self.gestureTreeInfo.header().setSectionResizeMode(qtw.QHeaderView.ResizeMode.Stretch)
         self.listGesturesTree.header().setStretchLastSection(True)
         return self.modelMakerTab
+
+    def autocorrecting(self, word):
+        matches = get_close_matches(
+            word,
+            self.wordSet,
+            n=1,
+            cutoff=0.85
+        )
+        return matches[0] if matches else None
+    
+    def wordPercentage(self, word, maxLen=8):
+        if word not in self.wordSet:
+            return 0.0
+        lengthScore = min(len(word) / maxLen, 1.0)
+        return 0.6 + 0.4 * lengthScore
     
     def checkWordBoundary(self):
-        if not self.letterBuffer or not self.lastGestureTime:
-            return
-        if time.time() - self.lastGestureTime >= self.gapBetweenSignRecognition:
-            self.flushLetterBuffer()
+        if self.decoder.shouldFlush():
+            text, conf, tag = self.decoder.flush()
+            self.aslTranscriptionOutput.append(
+                f"{text} ({tag}, {conf:.2f})"
+            )
+            self.aslTranscriptionOutput.setText("…")
     
     def aslmodelshow(self):
         self.mpHands = mp.solutions.hands
@@ -561,6 +683,7 @@ class MainGui(qtw.QMainWindow):
             for line in lines:
                 level, msg = self.parseWorkerLogLine(line)
                 self.workerLogger.log(msg, level)
+                self.logStatus(f"Message From Model Training Software: {msg}, {LogLevel}.[level]")
         except FileNotFoundError:
             pass
 
@@ -590,30 +713,13 @@ class MainGui(qtw.QMainWindow):
         self.cursor.insertText(self.ts + text.strip() + "\n")
         self.transcriptionOutput.setTextCursor(self.cursor)
         self.transcriptionOutput.ensureCursorVisible()
-    
-
-    def flushLetterBuffer(self):
-        self.word = "".join(self.letterBuffer)
-        if self.word in self.wordSet:
-            self.output = self.word
-        else:
-            self.output = " ".join(self.letterBuffer)
-        self.ts = datetime.now().strftime("[%H:%M:%S] ")
-        self.cursor = self.aslTranscriptionOutput.textCursor()
-        self.cursor.movePosition(qtg.QTextCursor.MoveOperation.End)
-        self.cursor.insertText(self.ts + self.output + "\n")
-        self.aslTranscriptionOutput.setTextCursor(self.cursor)
-        self.aslTranscriptionOutput.ensureCursorVisible()
-        self.letterBuffer.clear()
-        self.lastGestureTime = None
 
     @qtc.pyqtSlot(str, float)
     def updateASLTranscription(self, name, score):
-        self.currentGesture = name
-        self.lastGestureTime = time.time()
-        self.letterBuffer.append(name)
-        
-    def scoreTrascription(self, score, name):
+        preview = self.decoder.addLetter(name)
+        self.previewOutput.setText(preview)     
+
+    def scoreTranscription(self, score, name):
         self.ts = datetime.now().strftime("[%H:%M:%S] ")
         self.cursor = self.scoreTranscriptionOutput.textCursor()
         self.cursor.movePosition(qtg.QTextCursor.MoveOperation.End)
@@ -626,6 +732,7 @@ class MainGui(qtw.QMainWindow):
            self.addGesture(self.gestureNameInput.text().strip())
         else:
             self.errorMenu(message="The Gesture Does Not Have a Name.")
+
     def loadData(self):
         if not os.path.exists(JSON_FILE):
             return []
@@ -756,8 +863,10 @@ class MainGui(qtw.QMainWindow):
                 self.startCaptureBtn.setText("Start Capture")
             self.deleteGesture(self.name)
             self.frameTimer.start(33)
+
     def startCapture(self):
         self.toggleCapture()
+
     def initCamera(self):
         if hasattr(self, "cap") and self.cap and self.cap.isOpened():
             self.cap = self.cap
@@ -791,6 +900,7 @@ class MainGui(qtw.QMainWindow):
             if self.ret:
                 with self.frameLock:
                     self.frame = self.frame
+    
     def launchCameraThread(self):
         if getattr(self, "cameraThread", None) and self.cameraThread.is_alive():
             return
@@ -893,11 +1003,11 @@ class MainGui(qtw.QMainWindow):
             json.dump(self.job, f)
         subprocess.Popen(["docker", "compose", "build", "--no-cache"], cwd=Path(__file__).parent.parent.parent / "deploy")
         subprocess.Popen(["docker", "compose", "up"], cwd=Path(__file__).parent.parent.parent / "deploy")
-        self.logStatus("Started training worker", LogLevel.INFO)
+        self.logStatus("Started Training Your Model", LogLevel.INFO)
 
     def trainExportModel(self):
         self.runTraining()
-        self.logStatus("Starting Model Training!", LogLevel.INFO)
+        self.logStatus("Booting Up The Model Maker", LogLevel.INFO)
         self.logStatus("This may take anywhere from 30 Seconds to 20 Minutes depending on hardware capabilities and amount of images being trained.", LogLevel.INFO)
         self.resultCheckTimer = qtc.QTimer()
         self.resultCheckTimer.timeout.connect(self.checkWorkerResult)
@@ -907,22 +1017,21 @@ class MainGui(qtw.QMainWindow):
         if state == qtc.Qt.CheckState.Checked:
             self.runtimeLogger.setLevel(LogLevel.DEBUG)
             self.workerLogger.setLevel(LogLevel.DEBUG)
-            self.logStatus("Debug logging enabled", LogLevel.Info)
+            self.translatorLogger.setLevel(LogLevel.DEBUG)
+            self.logStatus("Debug logging enabled", LogLevel.INFO)
         else:
             self.runtimeLogger.setLevel(LogLevel.INFO)
+            self.translatorLogger.setLevel(LogLevel.INFO)
             self.workerLogger.setLevel(LogLevel.INFO)
             self.logStatus("Debug logging disabled", LogLevel.INFO)
 
     def checkWorkerResult(self):
-        #
-        # check this code to see what it does and if it needs to be changed
-        #
         self.resultPath = SHARED / "result.json"
         if not self.resultPath.exists():
             return
         with open(self.resultPath) as f:
             self.result = json.load(f)
-        self.logStatus(f"Final accuracy: {self.result['accuracy']}", LogLevel.INFO)
+        self.logStatus(f"Final model accuracy: {self.result['accuracy']}", LogLevel.INFO)
         self.resultCheckTimer.stop()
         self.workerLogTimer.stop()
         subprocess.Popen(["docker", "compose", "down", "-v"], cwd=Path(__file__).parent.parent.parent / "deploy")
@@ -948,34 +1057,38 @@ class MainGui(qtw.QMainWindow):
         self.logStatus("Model Exported Successfully")
         print("Model Exported Successfully")
         """
+    
     def openVersionFolder(self):
         os.startfile(self.modelDir)
+    
     def settingsTabUI(self):
-        #
-        # comepletely rewrite this the base can stay but the actual settings logic needs to be changed
-        #
         self.settingsTab = qtw.QWidget()
         self.settingsTabLayout = qtw.QGridLayout()
+        self.visualizeModelExamplesInput = qtw.QLineEdit()
+        self.visualizeModelExamplesInput.setPlaceholderText("Change Number of Examples Shown When Visualizing the Model: ")
         self.debugCheckbox = qtw.QCheckBox("Enable debug logging")
-        self.settingsTabLayout.addWidget(self.debugCheckbox, 0, 0)
+        self.settingsTabLayout.addWidget(self.visualizeModelExamplesInput, 0, 0)
+        self.settingsTabLayout.addWidget(self.debugCheckbox, 1, 0)
         self.debugCheckbox.stateChanged.connect(self.toggleDebugLogging)
-        #self.setTemplate = qtw.QLineEdit()
-        #self.setTemplate.setPlaceholderText("Set: ")
-        #self.settingsTabLayout.addWidget(self.setTemplate, 0, 0)
-        #self.setTemplate.setCheckable(True)
-        #self.setTemplate.clicked.connect(self.setTemplater)
         self.settingsTab.setLayout(self.settingsTabLayout)
         return self.settingsTab
-    def setTemplater(self):
-        print("configure a settings placeholder")
-        # example for how to set settings
-        # ----------------------------------
-        # self.settings.set("modelDir", "D:/NewGesturePath")
-        # self.settings.set("darkMode", True)
+    
+    def updateSettings(self):
+        self.newExampleAmount = int(self.visualizeModelExamplesInput)
+        #updateSettings("settings.examples", self.newExampleAmount)
+    def reloadSettings(self):
+        LOAD_SETTINGS()
+        self.decoder.wordGap = LOAD_SETTINGS.settings.word_gap
+    
+    
     def errorMenu(self, message):
         qtw.QMessageBox.critical(self, "Error: ", message, qtw.QMessageBox.StandardButton.Ok)
+    
     def logStatus(self, message, level=LogLevel.INFO):
-        self.runtimeLogger.log(message, level)
+        self.runtimeLogger.log(message, LogLevel.DEBUG)
+        self.translatorLogger.log(message, level)
+        self.workerLogger.log(message, level)
+    
     def closeProgram(self):
         if hasattr(self, "stopEvent"):
             self.stopEvent.set()
@@ -991,6 +1104,7 @@ class MainGui(qtw.QMainWindow):
             self.gestureThread.wait()
         subprocess.Popen(["docker-compose", "down", "-v"], cwd=Path(__file__).parent.parent.parent / "deploy")
         qtw.QApplication.quit()
+
 if __name__ == "__main__":
     app = qtw.QApplication(sys.argv)
     window = MainGui()
