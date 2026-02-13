@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 from config.loader import loadSettings
+from config.loadDefaults import loadDefaultSettings
+from config.writer import ConfigAPI
+from config.config import DEFAULT_CONFIG
 #
 #
 # Fuck you script
@@ -48,9 +51,10 @@ from difflib import get_close_matches
 import re
 import os 
 CONFIG_FILE = Path(__file__).parent.parent.parent / "app/src/config/config.dev.toml"
-LOAD_SETTINGS = loadSettings()
-HF_TOKEN = LOAD_SETTINGS.env.hf_token
-VERSION = LOAD_SETTINGS.version.version
+SETTINGS = loadSettings()
+#LOAD_DEFAULTS = loadDefaultSettings()
+HF_TOKEN = SETTINGS.env.hf_token
+VERSION = SETTINGS.version.version
 SHARED = Path(__file__).parent.parent.parent / "shared"
 DB_FILE = Path(__file__).parent / "gestures.db"
 DATASET_PATH = Path(__file__).parent.parent.parent / "shared/dataset"
@@ -60,24 +64,24 @@ MODEL_PATH = Path(__file__).parent.parent.parent / "deploy/gestures.task"
 WORDLIST = Path(__file__).parent.parent.parent / "deploy/words.txt"
 #EXPORT_PATH.mkdir(parents=True, exist_ok=True)
 #DATASET_PATH.mkdir(parents=True, exist_ok=True)
-MODEL_NAME = LOAD_SETTINGS.gestures.gesture_model
+MODEL_NAME = SETTINGS.gestures.gesture_model
 CAMERA_INDEX = 0
-NUM_EXAMPLES = LOAD_SETTINGS.settings.examples
+NUM_EXAMPLES = SETTINGS.settings.examples
 CONFIG_PATH = None
 JSON_FILE = Path(__file__).parent.parent.parent / "shared/gestures.json"
 IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
 BASE_DATA = {
     "name": "", "image_count": ""
 }
-SAMPLE_RATE = LOAD_SETTINGS.settings.sam_rate
-INITIAL_CHUNK_DURATION = LOAD_SETTINGS.settings.init_chunk_der
-MIN_CHUNK_DURATION = LOAD_SETTINGS.settings.min_chunk_der
-CHUNK_DECREMENT = LOAD_SETTINGS.settings.chunk_dec
-CONFIDENCE_THRESHOLD = LOAD_SETTINGS.settings.confidence_threshold
-WORD_GAP = LOAD_SETTINGS.settings.word_gap
-AUTOCORRECT_TOGGLE = LOAD_SETTINGS.settings.autocorrect
-AUTOCORRECT_THRESHOLD = LOAD_SETTINGS.settings.autocorrect_threshold
-LOG_LEVEL = LOAD_SETTINGS.app.log_level
+SAMPLE_RATE = SETTINGS.settings.sam_rate
+INITIAL_CHUNK_DURATION = SETTINGS.settings.init_chunk_der
+MIN_CHUNK_DURATION = SETTINGS.settings.min_chunk_der
+CHUNK_DECREMENT = SETTINGS.settings.chunk_dec
+CONFIDENCE_THRESHOLD = SETTINGS.settings.confidence_threshold
+WORD_GAP = SETTINGS.settings.word_gap
+AUTOCORRECT_TOGGLE = SETTINGS.settings.autocorrect
+AUTOCORRECT_THRESHOLD = SETTINGS.settings.autocorrect_threshold
+LOG_LEVEL = SETTINGS.app.log_level
 
 class LogLevel:
     DEBUG = 0
@@ -332,9 +336,9 @@ class MainGui(qtw.QMainWindow):
     def __init__(self):
         super().__init__()
         #self.settings = SettingsManager(CONFIG_FILE)
-        self.title = LOAD_SETTINGS.app.name
-        self.width = LOAD_SETTINGS.app.width
-        self.height = LOAD_SETTINGS.app.height
+        self.title = SETTINGS.app.name
+        self.width = SETTINGS.app.width
+        self.height = SETTINGS.app.height
         self.setWindowTitle(self.title)
         self.runtimeLogger = UILogger("runtime")
         self.translatorLogger = UILogger("translator")
@@ -358,7 +362,7 @@ class MainGui(qtw.QMainWindow):
         self.exportPath = Path(EXPORT_PATH)
         self.exampleAmount = NUM_EXAMPLES
         self.workerLogPath = Path(WORKER_LOG_PATH)
-        self.lines = LOAD_SETTINGS.settings.lines
+        self.lines = SETTINGS.settings.lines
         self.gestureThread = qtc.QThread(self)
         self.signRecognizerNoLines = GestureRecognizerWithoutLinesWorker(MODEL_PATH)
         self.logStatus("Loaded Model Detection", LogLevel.INFO)
@@ -1065,21 +1069,76 @@ class MainGui(qtw.QMainWindow):
         self.settingsTab = qtw.QWidget()
         self.settingsTabLayout = qtw.QGridLayout()
         self.visualizeModelExamplesInput = qtw.QLineEdit()
+        self.widthInput = qtw.QLineEdit()
+        self.resetSettingsButton = qtw.QPushButton()
+        self.resetSettingsButton.setText("Reset All Settings Back to Defaults")
         self.visualizeModelExamplesInput.setPlaceholderText("Change Number of Examples Shown When Visualizing the Model: ")
+        self.widthInput.setPlaceholderText("Change the Width of the Main Window: ")
         self.debugCheckbox = qtw.QCheckBox("Enable debug logging")
         self.settingsTabLayout.addWidget(self.visualizeModelExamplesInput, 0, 0)
-        self.settingsTabLayout.addWidget(self.debugCheckbox, 1, 0)
+        self.settingsTabLayout.addWidget(self.widthInput, 1, 0)
+        self.settingsTabLayout.addWidget(self.resetSettingsButton, 3, 1)
+        self.settingsTabLayout.addWidget(self.debugCheckbox, 2, 0)
         self.debugCheckbox.stateChanged.connect(self.toggleDebugLogging)
+        self.resetSettingsButton.pressed.connect(self.confirmResetSettings)
         self.settingsTab.setLayout(self.settingsTabLayout)
         return self.settingsTab
     
     def updateSettings(self):
+        self.newWidth = (self.widthInput)
+        self.newHeight = (self.heightInput)
+        self.setLogLevel = (self.logLevelInput)
+
+        self.newGesturesName = self.gestureModelInput
+
         self.newExampleAmount = int(self.visualizeModelExamplesInput)
-        #updateSettings("settings.examples", self.newExampleAmount)
+        self.newSampleRate = self.sampleRateInput
+        self.newInitialChunkDeration = self.initialChunkDerationInput
+        self.newMinimumChunkDeration = self.minimumChunkDerationInput
+        self.newChunkDecrement = self.chunkDecrementInput
+        self.linesBool = bool(self.linesCheckBoxInput)
+        self.newConfidenceThreshold = self.confidenceThresholdInput
+        self.setAutocorrectToggle = bool(self.AutocorrectToggleInput)
+        self.setAutocorrectThreshold = self.AutocorrectThresholdInput
+        self.setWordGap = self.setWordGapInput
+        self.setPreviewToggle = bool(self.PreviewToggleInput)
+        self.setConfidenceToggle = bool(self.ConfidenceToggleInput)
+        
+        ConfigAPI.update("app", "width", self.newWidth)
+        ConfigAPI.update("app", "height", self.newHeight)
+        ConfigAPI.update("app", "log_level", self.setLogLevel)
+
+        ConfigAPI.update("gestures", "gesture_model", self.newGesturesName)
+
+        ConfigAPI.update("settings", "examples", self.newExampleAmount)
+        ConfigAPI.update("settings", "sam_rate", self.newSampleRate)
+        ConfigAPI.update("settings", "init_chunk_der", self.newInitialChunkDeration)
+        ConfigAPI.update("settings", "min_chunk_der", self.newMinimumChunkDeration)
+        ConfigAPI.update("settings", "chunk_dec", )
+        ConfigAPI.update("settings", "lines", )
+        ConfigAPI.update("settings", "confidence_threshold", )
+        ConfigAPI.update("settings", "autocorrect", self.setAutocorrectToggle)
+        ConfigAPI.update("settings", "autocorrect_threshold", self.setAutocorrectThreshold)
+        ConfigAPI.update("settings", "word_gap", self.setWordGap)
+        ConfigAPI.update("settings", "preview_toggle", self.setPreviewToggle)
+        ConfigAPI.update("settings", "confidence_toggle", self.setConfidenceToggle)
+
     def reloadSettings(self):
-        LOAD_SETTINGS()
-        self.decoder.wordGap = LOAD_SETTINGS.settings.word_gap
+        SETTINGS
+        
+        self.decoder.wordGap = SETTINGS.settings.word_gap
     
+    def confirmResetSettings(self):
+        self.reply = qtw.QMessageBox.question(
+            self,
+            "Confirm Reset",
+            f"Are you sure you want to reset all of the settings back to defaults?",
+            qtw.QMessageBox.StandardButton.Yes | qtw.QMessageBox.StandardButton.No,
+            qtw.QMessageBox.StandardButton.No
+        )
+        if self.reply == qtw.QMessageBox.StandardButton.Yes:
+            loadDefaultSettings()
+
     
     def errorMenu(self, message):
         qtw.QMessageBox.critical(self, "Error: ", message, qtw.QMessageBox.StandardButton.Ok)
