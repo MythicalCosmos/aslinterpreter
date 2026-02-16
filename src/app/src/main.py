@@ -5,54 +5,35 @@ from config.writer import ConfigAPI
 from config.config import DEFAULT_CONFIG
 #
 #
-# Fuck you script
+# :3
 #
 #
-#
-# GOOD FUCKING LUCK WITH main.py :3 :)
-# you will not have fun 
-# if it works DO NOT FUCKING TOUCH IT
-#
-#
-#from mediapipe_model_maker import gesture_recognizer as mp
-#assert tf.__version__.startswith('2')
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import matplotlib.pyplot as plt
-#from PIL import Image, ImageTk
 from datetime import datetime
 import PyQt6.QtWidgets as qtw
-#import ttkbootstrap as tb
 import PyQt6.QtCore as qtc
 import PyQt6.QtGui as qtg
 from pathlib import Path
-#import tensorflow as tf
-#import mediapipe as mp
-from dotenv import load_dotenv
 from faster_whisper import WhisperModel
 from pyannote.audio import Pipeline
 import soundcard as sc
 import soundfile as sf
 import numpy as np
 import io
-import mysql.connector
-import tomli
 import threading
-import requests
 import subprocess
 import json
-import sqlite3
 import shutil
 import time
 import sys
 import cv2
 from difflib import get_close_matches
-import re
 import os 
 CONFIG_FILE = Path(__file__).parent.parent.parent / "app/src/config/config.dev.toml"
 SETTINGS = loadSettings()
-#LOAD_DEFAULTS = loadDefaultSettings()
 HF_TOKEN = SETTINGS.env.hf_token
 VERSION = SETTINGS.version.version
 SHARED = Path(__file__).parent.parent.parent / "shared"
@@ -62,8 +43,6 @@ EXPORT_PATH = Path(__file__).parent.parent.parent / "shared/exports"
 WORKER_LOG_PATH = Path(__file__).parent.parent.parent / "shared/logs/worker.log.json"
 MODEL_PATH = Path(__file__).parent.parent.parent / "deploy/gestures.task"
 WORDLIST = Path(__file__).parent.parent.parent / "deploy/words.txt"
-#EXPORT_PATH.mkdir(parents=True, exist_ok=True)
-#DATASET_PATH.mkdir(parents=True, exist_ok=True)
 MODEL_NAME = SETTINGS.gestures.gesture_model
 CAMERA_INDEX = 0
 NUM_EXAMPLES = SETTINGS.settings.examples
@@ -137,7 +116,6 @@ class LogViewer(qtw.QTextEdit):
 
 class WordDecoder:
     def __init__(self, wordSet):
-        #self.config = config
         self.wordSet = wordSet
         self.buffer = []
         self.lastTime = None
@@ -224,7 +202,6 @@ class WhisperWorker(qtc.QThread):
             maxSamples = SAMPLE_RATE * 30
             recorded = recorded[-maxSamples:]
             text = self.transcribeAudio(recorded)
-            #self.textReady.emit(text)
             if self.currentChunkDuration > MIN_CHUNK_DURATION:
                 self.currentChunkDuration = max(self.currentChunkDuration - CHUNK_DECREMENT, MIN_CHUNK_DURATION)
             if text != self.lastText:
@@ -286,7 +263,6 @@ class AspectRatioWidget(qtw.QWidget):
         self.painter.end()
 
 class GestureRecognizerWithoutLinesWorker(qtc.QObject):
-    #frameReady = qtc.pyqtSignal(qtg.QPixmap)
     gestureRecognized = qtc.pyqtSignal(str, float)
     def __init__(self, MODEL_PATH: str, parent=None):
         super().__init__(parent)
@@ -321,21 +297,11 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
                 if now - self.lastProcessTime > 0.3:
                     self.lastGesture = top.category_name
                     self.gestureRecognized.emit(top.category_name, top.score)
-            #self.gestureName = top.category_name
-            #self.score = top.score
-            #if self.result.gestures and self.topGesture.score > 0.5:
-#                cv2.putText(frame, f"{self.gestureName} ({self.score:.2f})", (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-        #self.h, self.w, self.ch = frame.shape
-        #self.bytesPerLine = self.ch * self.w
-        #self.qimg = qtg.QImage(frame.data, self.w, self.h, self.bytesPerLine, qtg.QImage.Format.Format_BGR888)
-        #self.pixmap = qtg.QPixmap.fromImage(self.qimg)
-        #self.frameReady.emit(self.pixmap)
 
 class MainGui(qtw.QMainWindow):
     frameForGesture = qtc.pyqtSignal(np.ndarray)
     def __init__(self):
         super().__init__()
-        #self.settings = SettingsManager(CONFIG_FILE)
         self.title = SETTINGS.app.name
         self.width = SETTINGS.app.width
         self.height = SETTINGS.app.height
@@ -380,10 +346,8 @@ class MainGui(qtw.QMainWindow):
         self.capturing = False
         self.currentGesture = None
         os.makedirs(self.modelDir, exist_ok=True)
-        #self.workerLogPath = Path(__file__).parent.parent.parent / "shared/logs/worker.log"
         self._logFilePos = 0
         self.workerLogTimer = qtc.QTimer()
-        #self.workerLogTimer.timeout.connect(self.readWorkerLogs)
         self.workerLogTimer.start(250)
         self.translatorCameraView = AspectRatioWidget(16/9)
         self.cameraView = AspectRatioWidget(16/9)
@@ -396,35 +360,17 @@ class MainGui(qtw.QMainWindow):
         self.setCentralWidget(self.centralWid)
         self.tabs = qtw.QTabWidget()
         self.quitTab = qtw.QWidget()
-        #self.translatorStatusOutput = qtw.QTextEdit()
-        #self.translatorStatusOutput.setReadOnly(True)
-        #self.statusOutput = qtw.QTextEdit()
-        #self.statusOutput.setReadOnly(True)
-        #self.stdoutRedirector2 = TranslatorTextRedirector(self.translatorStatusOutput)
-        #self.stderrRedirector2 = TranslatorTextRedirector(self.translatorStatusOutput)
-        #self.stdoutRedirector = TextRedirector(self.statusOutput)
-        #self.stderrRedirector = TextRedirector(self.statusOutput)
-        #sys.stdout = self.stdoutRedirector and self.stdoutRedirector2
-        #sys.stderr = self.stderrRedirector and self.stderrRedirector2
-        #self.flushTimer.start(100)
         self.statusOutput = LogViewer(maxLines=1500)
         self.translatorStatusOutput = LogViewer(maxLines=1500)
         self.workerOutput = LogViewer(maxLines=1500)
         self.runtimeLogger.logReady.connect(self.statusOutput.enqueue)
         self.translatorLogger.logReady.connect(self.translatorStatusOutput.enqueue)
         self.workerLogger.logReady.connect(self.statusOutput.enqueue)
-        #print(self.stdoutRedirector)
-        #print(self.stdoutRedirector2)
-        #print(self.translatorStatusOutput)
-        #print(self.statusOutput)
-        #sys.stdout = self.stdoutRedirector2
-        #sys.stderr = self.stderrRedirector2
         self.frame = None
         self.tabs.addTab(self.translatorTabUI(), "Translator")
         self.tabs.addTab(self.modelMakerTabUI(), "Model Maker")
         self.tabs.addTab(self.settingsTabUI(), "Settings")
         self.tabs.currentChanged.connect(lambda _: self.updateFrame())
-        #self.tabs.currentChanged.connect(self.onTabChanged)
         self.outLayout.addWidget(self.tabs, 0)
         self.initCamera()
         self.gestures = self.loadExistingGestures(orderByName=True)
@@ -436,7 +382,6 @@ class MainGui(qtw.QMainWindow):
         self.wordTimer = qtc.QTimer()
         self.wordTimer.timeout.connect(self.checkWordBoundary)
         self.wordTimer.start(200)
-        #self.signRecognizerNoLines.frameReady.connect(self.translatorCameraView.setPixmap)
         self.whisperWorker.textReady.connect(self.updateTranscription)
         self.frameForGesture.connect(self.signRecognizerNoLines.processFrame)
         self.letterBuffer = []
@@ -454,19 +399,15 @@ class MainGui(qtw.QMainWindow):
         self.translatorTab = qtw.QWidget()
         self.translatorTabLayout = qtw.QGridLayout()
         self.scoreTranscriptionOutputLayout = qtw.QVBoxLayout()
-        #self.loggingOutputLayout = qtw.QVBoxLayout()
-        #self.outputPathsLayout = qtw.QVBoxLayout()
         self.scoreTranscriptionOutput = qtw.QTextEdit()
         self.scoreTranscriptionOutput.setReadOnly(True)
         self.audioOutputTranscriptionLayout = qtw.QVBoxLayout()
         self.signedOutputTranscriptionLayout = qtw.QVBoxLayout()
         self.translatorCameraLabel = qtw.QLabel("Signing View Camera")
         self.translatorStatusOutputLabel = qtw.QLabel("Debug Information")
-        #self.outputPathsLabel = qtw.QLabel("Paths")
         self.audioOutputTranscriptionLabel = qtw.QLabel("Audio Output Transcription")
         self.signedOutputTranscriptionLabel = qtw.QLabel("Signed Output Transcription")
         self.scoreTranscriptionOutputLabel = qtw.QLabel("Signed Word Score")
-        #self.translatorTabLayout.addWidget(self.translatorStatusOutput, 1, 0)
         self.transcriptionOutput = qtw.QTextEdit()
         self.transcriptionOutput.setReadOnly(True)
         self.aslTranscriptionOutput = qtw.QTextEdit()
@@ -478,9 +419,6 @@ class MainGui(qtw.QMainWindow):
         self.audioRecordBtnStatusLabel = qtw.QLabel
         self.translatorTabLayout.addLayout(self.audioOutputTranscriptionLayout, 1, 2)
         self.translatorTabLayout.addLayout(self.signedOutputTranscriptionLayout, 2, 2)
-        #self.previewOutput = qtw.QTextEdit()
-        #self.previewOutput.setReadOnly(True)
-        #self.previewOutput.setStyleSheet("color: white; font-style: italic; font-size: 14px;")
         self.scoreTranscriptionOutput.setText("…")
         self.datasetPathLabel.setTextInteractionFlags(qtc.Qt.TextInteractionFlag.TextSelectableByMouse)
         self.datasetPathLabel.setStyleSheet("color: white; font-style: italic; font-size: 14px;")
@@ -499,12 +437,9 @@ class MainGui(qtw.QMainWindow):
         self.signedOutputTranscriptionLayout.addWidget(self.aslTranscriptionOutput, 1)
         self.audioOutputTranscriptionLayout.addWidget(self.audioOutputTranscriptionLabel, 0)
         self.audioOutputTranscriptionLayout.addWidget(self.transcriptionOutput, 1)
-        #self.outputPathsLayout.addWidget(self.outputPathsLabel, 0)
-        #self.outputPathsLayout.addWidget(self.datasetPathLabel, 1)
         self.scoreTranscriptionOutputLayout.addWidget(self.scoreTranscriptionOutputLabel, 0)
         self.scoreTranscriptionOutputLayout.addWidget(self.scoreTranscriptionOutput, 1)
         self.translatorTabLayout.addLayout(self.scoreTranscriptionOutputLayout, 0, 2)
-        #self.translatorTabLayout.addWidget(self.scoresTranscriptionScoresOutput, 2, 2)
         self.translatorTabLayout.addWidget(self.audioRecordBtn, 0, 1)
         self.translatorStatusLayout.addWidget(self.translatorStatusOutputLabel, 0)
         self.translatorStatusLayout.addWidget(self.translatorStatusOutput, 1)
@@ -524,11 +459,6 @@ class MainGui(qtw.QMainWindow):
         # gestureControlTreeModelViewAndViewLayout() is the layout for showing what gesture exist and the information tied to them
         #
         #
-        # I stopped tracking it good fucking luck
-        # It's fucked
-        #
-        #
-        #
         self.modelMakerTab = qtw.QWidget()
         self.modelMakerTabLayout = qtw.QGridLayout()
         self.treeAndCameraLayout = qtw.QHBoxLayout()
@@ -544,7 +474,6 @@ class MainGui(qtw.QMainWindow):
         self.deleteGestureBtn = qtw.QPushButton("Delete Gesture",)
         self.gestureControlTreeBtnLayout.addWidget(self.deleteGestureBtn, 2)
         self.deleteGestureBtn.clicked.connect(self.gestureSelectedCheck)
-        #self.statusLayout.addWidget(self.workerLogger)
         self.statusFrame = qtw.QWidget()
         self.startCaptureBtn = qtw.QPushButton("Start Capture")
         self.modelMakerTabLayout.addWidget(self.startCaptureBtn, 0, 0)
@@ -585,7 +514,6 @@ class MainGui(qtw.QMainWindow):
         self.gestureControlTreeModelViewAndViewLayout.addWidget(self.listGesturesTree, 1)
         self.gestureControlTreeModelViewAndViewLayout.addWidget(self.gestureTreeInfo, 3)
         self.statusLayout.addWidget(self.statusOutput, 1)
-        #self.listGesturesTree.itemClicked.connect(self.whichGestureSelected)
         self.gestureData = []
         self.gestureControlTreeLabel = qtw.QLabel("Gesture Management")
         self.statusFrame.setLayout(self.statusLayout)
@@ -594,28 +522,13 @@ class MainGui(qtw.QMainWindow):
         self.outerGestureControlTreeBtnLayout.addLayout(self.gestureControlTreeBtnLayout, 1)
         self.treeAndCameraLayout.addLayout(self.outerGestureControlTreeBtnLayout)
         self.modelMakerTabLayout.addLayout(self.cameraViewLayout, 1, 1, 1, -1)
-        #self.treeAndCameraLayout.addLayout(self.cameraViewLayout, 2)
-        #self.treeAndCameraLayout.addLayout(self.cameraViewLayout)
         self.outerGestureControlTreeBtnLayout.addLayout(self.gestureControlTreeModelViewAndViewLayout, 2)
         self.modelMakerTabLayout.addLayout(self.treeAndCameraLayout, 1, 0)
         self.modelMakerTabLayout.addWidget(self.datasetPathLabel, 4, 0, 1, -1)
         self.modelMakerTab.setLayout(self.modelMakerTabLayout)
-        #self.cameraView.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
-        #self.listGesturesTree.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
-        #self.gestureTreeInfo.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
         self.statusOutput.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
-        #self.treeAndCameraLayout.setStretchFactor(1, -1)
-        #self.cameraViewLabel.setAlignment(qtc.Qt.AlignmentFlag.AlignCenter)
-        #self.modelMakerTabLayout.setRowStretch(0, 0)
-        #self.modelMakerTabLayout.setRowStretch(1, 1)
-        #self.modelMakerTabLayout.setRowStretch(3, 0)
-        #self.modelMakerTabLayout.setRowStretch(4, 0)
-        #self.modelMakerTabLayout.setColumnStretch(0, 1)
-        #self.treeAndCameraLayout.setStretch(0, 1)
-        #self.treeAndCameraLayout.setStretch(1, 2)
         self.gestureTreeInfo.header().setSectionResizeMode(qtw.QHeaderView.ResizeMode.Stretch)
         self.listGesturesTree.header().setStretchLastSection(True)
-        #self.statusFrame.setSizePolicy(qtw.QSizePolicy.Policy.Expanding, qtw.QSizePolicy.Policy.Expanding)
         self.gestureTreeInfo.header().setSectionResizeMode(qtw.QHeaderView.ResizeMode.Stretch)
         self.listGesturesTree.header().setStretchLastSection(True)
         return self.modelMakerTab
@@ -930,13 +843,6 @@ class MainGui(qtw.QMainWindow):
         h, w, ch = rgb.shape
         qimg = qtg.QImage(rgb.data, w, h, ch * w, qtg.QImage.Format.Format_RGB888)
         self.pixmap = qtg.QPixmap.fromImage(qimg)
-        #if self.translatorCameraView.isVisible():
-                #self.signRecognizerNoLines.processFrame(self.frameCopy)
-        #if self.translatorCameraView.isVisible() and not self.lines:
-        #self.now = time.time()
-        #if self.now - self._lastGestureTime >= self.gestureInterval:
-            #self.frameForGesture.emit(self.frameCopy)
-            #self._lastGestureTime = self.now
         if self.cameraView.isVisible():
             self.cameraView.setPixmap(self.pixmap)
         if self.translatorCameraView.isVisible():
@@ -1085,12 +991,19 @@ class MainGui(qtw.QMainWindow):
         return self.settingsTab
     
     def updateSettings(self):
+        #
+        # App Settings
+        #
         self.newWidth = (self.widthInput)
         self.newHeight = (self.heightInput)
         self.setLogLevel = (self.logLevelInput)
-
+        #
+        # Gesture Settings
+        #
         self.newGesturesName = self.gestureModelInput
-
+        #
+        # Control Settings
+        #
         self.newExampleAmount = int(self.visualizeModelExamplesInput)
         self.newSampleRate = self.sampleRateInput
         self.newInitialChunkDeration = self.initialChunkDerationInput
@@ -1103,13 +1016,19 @@ class MainGui(qtw.QMainWindow):
         self.setWordGap = self.setWordGapInput
         self.setPreviewToggle = bool(self.PreviewToggleInput)
         self.setConfidenceToggle = bool(self.ConfidenceToggleInput)
-        
+        #
+        # Updateing the App Settings
+        # 
         ConfigAPI.update("app", "width", self.newWidth)
         ConfigAPI.update("app", "height", self.newHeight)
         ConfigAPI.update("app", "log_level", self.setLogLevel)
-
+        #
+        # Updating the gesture settings
+        #
         ConfigAPI.update("gestures", "gesture_model", self.newGesturesName)
-
+        #
+        # Updating the control Settings
+        #
         ConfigAPI.update("settings", "examples", self.newExampleAmount)
         ConfigAPI.update("settings", "sam_rate", self.newSampleRate)
         ConfigAPI.update("settings", "init_chunk_der", self.newInitialChunkDeration)
@@ -1123,11 +1042,12 @@ class MainGui(qtw.QMainWindow):
         ConfigAPI.update("settings", "preview_toggle", self.setPreviewToggle)
         ConfigAPI.update("settings", "confidence_toggle", self.setConfidenceToggle)
 
+
+    # Don't really know if this is needed as I am pretty sure it calls the settings from the file everytime it is needed.
     def reloadSettings(self):
         SETTINGS
-        
-        self.decoder.wordGap = SETTINGS.settings.word_gap
-    
+
+
     def confirmResetSettings(self):
         self.reply = qtw.QMessageBox.question(
             self,
@@ -1140,9 +1060,12 @@ class MainGui(qtw.QMainWindow):
             loadDefaultSettings()
 
     
+    
     def errorMenu(self, message):
         qtw.QMessageBox.critical(self, "Error: ", message, qtw.QMessageBox.StandardButton.Ok)
     
+
+
     def logStatus(self, message, level=LogLevel.INFO):
         self.runtimeLogger.log(message, LogLevel.DEBUG)
         self.translatorLogger.log(message, level)
