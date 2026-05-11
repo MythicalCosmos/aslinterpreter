@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""
-Main desktop application entrypoint for ASL Interpreter.
-
-This module wires together:
-- App configuration and persistent settings
-- Camera capture and gesture inference (TFLite)
-- Speech transcription (Whisper)
-- PyQt6 UI (translator/model-maker/settings tabs)
-"""
-
 from config.loader import loadSettings  # Load persisted app config at startup.
 from config.loadDefaults import loadDefaultSettings  # Restore config defaults.
 from config.writer import ConfigAPI  # Read/update config values on disk.
@@ -463,10 +453,15 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
 
         self.lastGesture = None
         self.lastEmitTime = 0
+        self.mp_hands = mp.solutions.hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
 
     @qtc.pyqtSlot(np.ndarray)
     def processFrame(self, frame):
-        """Run throttled inference on a frame and emit recognized gesture."""
         now = time.time()
 
         if not self.enabled:
@@ -478,28 +473,36 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
 
         self.lastProcessTime = now
 
-        # Mirror so on-screen motion feels natural to the user.
+        # Mirror so on-screen motion feels natural
         frame = cv2.flip(frame, 1)
 
-        # Match model input contract: size + RGB + float normalization.
-        img = cv2.resize(frame, (self.width, self.height))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        img = np.expand_dims(img, axis=0)
+        # --- Step 1: Extract landmarks ---
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = self.mp_hands.process(rgb)
 
-        # Run TFLite inference.
-        self.interpreter.set_tensor(self.input_details[0]["index"], img)
+        # If no hand is visible in this frame, do nothing
+        if not result.multi_hand_landmarks:
+            return
+
+        # --- Step 2: Build the 63-float input vector ---
+        lm = result.multi_hand_landmarks[0].landmark
+        wrist = lm[0]
+        vec = np.array([
+            [l.x - wrist.x, l.y - wrist.y, l.z - wrist.z]
+            for l in lm
+        ]).flatten().astype(np.float32).reshape(1, 63)
+
+        # --- Step 3: Run TFLite inference ---
+        self.interpreter.set_tensor(self.input_details[0]["index"], vec)
         self.interpreter.invoke()
-
         output = self.interpreter.get_tensor(self.output_details[0]["index"])[0]
 
-        # Emit only confident predictions and throttle event spam.
+        # --- Step 4: Emit result if confident enough ---
         idx = int(np.argmax(output))
         score = float(output[idx])
         label = self.labels[idx] if idx < len(self.labels) else str(idx)
 
         if score > 0.5:
-            # Small cooldown prevents near-identical repeats across frames.
             if now - self.lastEmitTime > 0.3:
                 self.lastEmitTime = now
                 self.lastGesture = label
@@ -1195,13 +1198,17 @@ class MainGui(qtw.QMainWindow):
         return self.labels
     
     def runTraining(self):
-        """Run model-training script through WSL and surface logs to UI."""
-        # Launch training inside WSL so Linux-only deps are isolated from the UI app.
-        command = ["wsl", "python3", "/mnt/c/Users/stellar/Downloads/aslinterpreter/src/shared/scripts/train.py"]
-        result = subprocess.run(command, capture_output=True, text=True)
-        self.logStatus(f"Training process exited with code {result.returncode}", LogLevel.ERROR)
-        self.logStatus(f'Training Logs {result.stdout}', LogLevel.INFO)
-        self.logStatus(f'Errors {result.stderr}', LogLevel.ERROR)
+        train_script = Path(__file__).parent.parent.parent / "app/scripts/train.py"
+        result = subprocess.run(
+            [sys.executable, str(train_script)],
+            capture_output=True,
+            text=True
+        )
+        self.logStatus(f"Training exited with code {result.returncode}", LogLevel.INFO)
+        if result.stdout:
+            self.logStatus(f"Training output: {result.stdout}", LogLevel.INFO)
+        if result.stderr:
+            self.logStatus(f"Training errors: {result.stderr}", LogLevel.ERROR)
 
     def trainExportModel(self):
         """User-facing wrapper that announces and starts model training."""
