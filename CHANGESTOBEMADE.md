@@ -17,7 +17,7 @@
 
 ## Libraries
 
-* [ ] Change the modelmaking and gesture recognition library to be one that works on all platforms and does not have issues with other libraries
+* [ ] Change the modelmaking and gesture recognition library to be one that works on all platforms and does not have issues with other libraries (Scikit-learn potentially)
 
 ## Model Making
 
