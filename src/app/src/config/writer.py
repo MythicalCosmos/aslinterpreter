@@ -48,9 +48,9 @@ class ConfigAPI:
             raise KeyError(f"Section '{section}' not found")
         if key not in config[section]:
             raise KeyError(f"Key '{key}' not in [{section}]")
-        config[section][key] = value
         if section == "env":
             raise PermissionError("env section is read-only")
+        config[section][key] = value
         cls._write(config)
         return config
 

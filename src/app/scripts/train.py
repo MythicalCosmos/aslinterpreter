@@ -13,6 +13,7 @@ import zipfile
 import json
 import shutil
 import tempfile
+import joblib
 
 SCRIPT_DIR   = Path(__file__).resolve().parent          # src/app/scripts/
 SHARED_DIR   = SCRIPT_DIR.parent                        # src/app/
@@ -127,39 +128,11 @@ def train_classifier(X, y, label_names):
 # ---------------------------------------------------------------------------
 # Stage 3 — Export to TFLite so the existing inference worker loads it
 # ---------------------------------------------------------------------------
-def export_tflite(clf, X_train, y_train, label_names):
-    """
-    Builds a small Keras model that mimics the Random Forest,
-    converts it to TFLite, and saves it to src/deploy/asl_model.tflite.
-    Returns the raw tflite bytes so export_task can reuse them.
-    """
-    n_classes = len(label_names)
-    proba = clf.predict_proba(X_train)
-
-    inp = tf.keras.Input(shape=(63,), name="landmarks")
-    x = tf.keras.layers.Dense(128, activation="relu")(inp)
-    x = tf.keras.layers.Dropout(0.3)(x)
-    x = tf.keras.layers.Dense(64, activation="relu")(x)
-    out = tf.keras.layers.Dense(n_classes, activation="softmax", name="gesture")(x)
-    model = tf.keras.Model(inputs=inp, outputs=out)
-
-    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
-    log("Training TFLite export model (this takes about 30 seconds)...")
-    model.fit(X_train, proba, epochs=80, batch_size=32, verbose=0)
-    log("Keras model trained")
-
-    converter = tf.lite.TFLiteConverter.from_keras_model(model)
-    tflite_bytes = converter.convert()
-
+def export_sklearn(clf, label_names):
     DEPLOY_DIR.mkdir(parents=True, exist_ok=True)
-    MODEL_OUT.write_bytes(tflite_bytes)
-    log(f"TFLite model saved → {MODEL_OUT}")
-
-    LABELS_OUT.write_text("\n".join(label_names))
-    log(f"Labels saved → {LABELS_OUT}")
-
-    # Return the bytes so export_task can bundle them
-    return tflite_bytes
+    joblib.dump(clf, DEPLOY_DIR / "asl_model.pkl")
+    (DEPLOY_DIR / "labels.txt").write_text("\n".join(label_names))
+    log("Model saved as asl_model.pkl")
 
 def export_task(tflite_bytes, label_names):
     """
@@ -243,7 +216,7 @@ if __name__ == "__main__":
     try:
         X, y, label_names = collect_dataset()
         clf, X_train, y_train = train_classifier(X, y, label_names)
-        tflite_bytes = export_tflite(clf, X_train, y_train, label_names)
+        tflite_bytes = export_sklearn(clf, X_train, y_train, label_names, X_all=X)
         export_task(tflite_bytes, label_names)
         log("=== Training Complete ===")
         log(f"Output files in {DEPLOY_DIR}:")

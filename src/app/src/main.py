@@ -32,15 +32,23 @@ import json  # Gesture metadata persistence format.
 import shutil  # Recursive dataset folder deletion.
 import time  # Timing logic for word boundaries and throttles.
 import sys  # QApplication argv/exit plumbing.
+import platform # Windows Camera module.
 from enum import IntEnum  # Strongly typed log level enum.
 import cv2  # Camera capture + frame preprocessing.
 from difflib import get_close_matches  # Dictionary autocorrect matching.
+from logging import setupLogging
+from crashlogger import installCrashHandler
+import joblib
+
+installCrashHandler()
 
 # -----------------------------------------------------------------------------
 # Global configuration and runtime constants
 # -----------------------------------------------------------------------------
 # Keep absolute path construction centralized so runtime code can use simple
 # constants without worrying about the process working directory.
+LOG_DIR = Path(__file__).parent.parent.parent / "shared/logs"
+app_log = setupLogging(LOG_DIR)
 CONFIG_FILE = Path(__file__).parent.parent.parent / "app/src/config/config.dev.toml"
 SETTINGS = loadSettings()
 HF_TOKEN = SETTINGS.env.hf_token
@@ -49,7 +57,8 @@ SHARED = Path(__file__).parent.parent.parent / "shared"
 DB_FILE = Path(__file__).parent / "gestures.db"
 DATASET_PATH = Path(__file__).parent.parent.parent / "shared/datasets"
 EXPORT_PATH = Path(__file__).parent.parent.parent / "shared/exports"
-WORKER_LOG_PATH = Path(__file__).parent.parent.parent / "shared/logs/worker.log.json"
+SHARED_DIR   = Path(__file__).resolve().parent
+WORKER_LOG_PATH = SHARED_DIR.parent / "logs" / "training_log.txt"
 MODEL_PATH = Path(__file__).parent.parent.parent / "deploy/asl_model.tflite"
 WORDLIST = Path(__file__).parent.parent.parent / "deploy/words.txt"
 LABELS_PATH = Path(__file__).parent.parent.parent / "deploy/labels.txt"
@@ -324,9 +333,11 @@ class WhisperWorker(qtc.QThread):
         self.lastText = ""
         self.running = True
         self.mic = sc.default_microphone()
-        self.model = WhisperManager.getModel()
         try:
-            Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+            self.diarization_pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                use_auth_token=HF_TOKEN or None
+            )
         except Exception as e:
             self.logMessage.emit(f"Diarization disabled: {e}", LogLevel.WARNING)
             self.diarization_pipeline = None
@@ -345,6 +356,7 @@ class WhisperWorker(qtc.QThread):
 
     def run(self):
         """Continuously capture microphone audio and emit incremental text."""
+        self.model = WhisperManager.getModel()
         self.logMessage.emit("Loading Whisper model...", LogLevel.INFO)
         recorded = np.zeros((0, 1), dtype=np.float32)
         while self.running:
@@ -359,10 +371,8 @@ class WhisperWorker(qtc.QThread):
             if self.currentChunkDuration > MIN_CHUNK_DURATION:
                 self.currentChunkDuration = max(self.currentChunkDuration - CHUNK_DECREMENT, MIN_CHUNK_DURATION)
             if text != self.lastText:
-                # Emit only newly produced suffix to avoid duplicate text.
-                newText = text[len(self.lastText):].strip()
-                if newText:
-                    self.textReady.emit(newText)
+                # Emit full text; UI can display it as a new timestamped block
+                self.textReady.emit(text.strip())
                 self.lastText = text
 
 class AspectRatioWidget(qtw.QWidget):
@@ -430,7 +440,8 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
     def __init__(self, MODEL_PATH: str, LABEL_PATH: str, parent=None):
         """Load TFLite gesture model + labels and initialize inference state."""
         super().__init__(parent)
-
+        self.clf = joblib.load(MODEL_PATH)
+        self.labels = open(LABEL_PATH).read().splitlines()
         self.modelPath = MODEL_PATH
         self.labels = open(LABEL_PATH).read().splitlines()
 
@@ -448,8 +459,7 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
         self.output_details = self.interpreter.get_output_details()
 
         self.input_shape = self.input_details[0]["shape"]
-        self.height = self.input_shape[1]
-        self.width = self.input_shape[2]
+        # input is [1, 63] — no height/width for landmark model
 
         self.lastGesture = None
         self.lastEmitTime = 0
@@ -492,10 +502,11 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
             for l in lm
         ]).flatten().astype(np.float32).reshape(1, 63)
 
-        # --- Step 3: Run TFLite inference ---
-        self.interpreter.set_tensor(self.input_details[0]["index"], vec)
-        self.interpreter.invoke()
-        output = self.interpreter.get_tensor(self.output_details[0]["index"])[0]
+        proba = self.clf.predict_proba(vec.reshape(1, -1))[0]
+        idx = int(np.argmax(proba))
+        score = float(proba[idx])
+        if score > 0.5:
+            self.gestureRecognized.emit(self.labels[idx], score)
 
         # --- Step 4: Emit result if confident enough ---
         idx = int(np.argmax(output))
@@ -787,7 +798,6 @@ class MainGui(qtw.QMainWindow):
             self.aslTranscriptionOutput.append(
                 f"{text} ({tag}, {conf:.2f})"
             )
-            self.aslTranscriptionOutput.setText("…")
     
     def aslmodelshow(self):
         """Render MediaPipe hand landmarks on the current frame."""
@@ -972,7 +982,8 @@ class MainGui(qtw.QMainWindow):
         self.gestureTreeInfo.setCurrentItem(None)
         self.currentGesture = None
         self.data = self.loadData()
-        self.stopEvent.set()
+        if hasattr(self, 'stopEvent'):
+            self.stopEvent.set()
         if self.cameraThread:
             self.cameraThread.join(timeout=0.2)
         # Remove metadata first, then remove dataset folder from disk.
@@ -1002,7 +1013,7 @@ class MainGui(qtw.QMainWindow):
         self.gestures = self.data
         for self.entry in self.data:
             self.name = self.entry["name"]
-            self.count = self.entry["image_count"]
+            self.count = self.countImages(Path(DATASET_PATH) / self.name)
             self.listGesturesTree.addTopLevelItem(
             qtw.QTreeWidgetItem([self.name])
             )
@@ -1072,7 +1083,8 @@ class MainGui(qtw.QMainWindow):
         else:
             self.cap = None
             for i in range(4):
-                self.tmp = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+                backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
+                self.tmp = cv2.VideoCapture(i, backend)
                 if self.tmp.isOpened():
                     self.ret, _ = self.tmp.read()
                     if self.ret:
@@ -1141,6 +1153,12 @@ class MainGui(qtw.QMainWindow):
             self.translatorCameraView.setPixmap(self.pixmap)
         if self.capturing and self.currentGesture:
             # Timestamped filenames prevent collisions during high-speed capture.
+            now = time.time()
+            if not hasattr(self, '_lastCapTime'):
+                self._lastCapTime = 0
+            if now - self._lastCapTime < 0.5:   # max 2 frames/sec
+                return
+            self._lastCapTime = now
             self.gesture = self.currentGesture
             self.gestureDir = self.modelDir / self.gesture
             self.gestureDir.mkdir(parents=True, exist_ok=True)
@@ -1199,16 +1217,25 @@ class MainGui(qtw.QMainWindow):
     
     def runTraining(self):
         train_script = Path(__file__).parent.parent.parent / "app/scripts/train.py"
-        result = subprocess.run(
-            [sys.executable, str(train_script)],
-            capture_output=True,
-            text=True
-        )
-        self.logStatus(f"Training exited with code {result.returncode}", LogLevel.INFO)
-        if result.stdout:
-            self.logStatus(f"Training output: {result.stdout}", LogLevel.INFO)
-        if result.stderr:
-            self.logStatus(f"Training errors: {result.stderr}", LogLevel.ERROR)
+        self.trainingProcess = qtc.QProcess(self)
+        self.trainingProcess.setProgram(sys.executable)
+        self.trainingProcess.setArguments([str(train_script)])
+        self.trainingProcess.readyReadStandardOutput.connect(self._onTrainingOutput)
+        self.trainingProcess.readyReadStandardError.connect(self._onTrainingError)
+        self.trainingProcess.finished.connect(self._onTrainingFinished)
+        self.trainingProcess.start()
+
+    def _onTrainingOutput(self):
+        out = bytes(self.trainingProcess.readAllStandardOutput()).decode()
+        self.logStatus(out.strip(), LogLevel.INFO)
+
+    def _onTrainingError(self):
+        err = bytes(self.trainingProcess.readAllStandardError()).decode()
+        self.logStatus(err.strip(), LogLevel.ERROR)
+
+    def _onTrainingFinished(self, code, _):
+        self.logStatus(f"Training finished (exit {code})", LogLevel.INFO)
+        self.trainExportModelBtn.setEnabled(True)
 
     def trainExportModel(self):
         """User-facing wrapper that announces and starts model training."""
@@ -1332,7 +1359,53 @@ class MainGui(qtw.QMainWindow):
         self.resetSettingsButton.pressed.connect(self.confirmResetSettings)
         self.settingsTab.setLayout(self.settingsTabLayout)
         self.monitorMenu.setCurrentIndex(self.windowManager.monitorIndex)
-        #return self.settingsTab
+
+                # --- audio/inference settings ---
+        self.sampleRateInput = qtw.QSpinBox()
+        self.sampleRateInput.setRange(8000, 48000)
+        self.sampleRateInput.setValue(SETTINGS.settings.sam_rate)
+
+        self.initialChunkDerationInput = qtw.QDoubleSpinBox()
+        self.initialChunkDerationInput.setRange(1.0, 30.0)
+        self.initialChunkDerationInput.setValue(SETTINGS.settings.init_chunk_der)
+
+        self.minimumChunkDerationInput = qtw.QDoubleSpinBox()
+        self.minimumChunkDerationInput.setRange(0.5, 10.0)
+        self.minimumChunkDerationInput.setValue(SETTINGS.settings.min_chunk_der)
+
+        self.chunkDecrementInput = qtw.QDoubleSpinBox()
+        self.chunkDecrementInput.setRange(0.1, 5.0)
+        self.chunkDecrementInput.setValue(SETTINGS.settings.chunk_dec)
+
+        self.confidenceThresholdInput = qtw.QDoubleSpinBox()
+        self.confidenceThresholdInput.setRange(0.0, 1.0)
+        self.confidenceThresholdInput.setSingleStep(0.05)
+        self.confidenceThresholdInput.setValue(SETTINGS.settings.confidence_threshold)
+
+        self.linesCheckBoxInput = qtw.QCheckBox("Show landmark lines")
+        self.linesCheckBoxInput.setChecked(SETTINGS.settings.lines)
+
+        self.AutocorrectToggleInput = qtw.QCheckBox("Enable autocorrect")
+        self.AutocorrectToggleInput.setChecked(SETTINGS.settings.autocorrect)
+
+        self.logLevelInput = qtw.QComboBox()
+        self.logLevelInput.addItems(["Debug", "Info", "Warning", "Error"])
+        self.logLevelInput.setCurrentIndex(SETTINGS.app.log_level)
+
+        # add a Save button that calls updateSettings
+        self.saveSettingsBtn = qtw.QPushButton("Save settings")
+        self.saveSettingsBtn.clicked.connect(self.updateSettings)
+
+        # add all to settingsTabLayout
+        for row, w in enumerate([
+            self.sampleRateInput, self.initialChunkDerationInput,
+            self.minimumChunkDerationInput, self.chunkDecrementInput,
+            self.confidenceThresholdInput, self.linesCheckBoxInput,
+            self.AutocorrectToggleInput, self.logLevelInput,
+            self.saveSettingsBtn
+        ], start=6):
+            self.settingsTabLayout.addWidget(w, row, 0)
+        return self.settingsTab
     
     def changeMonitor(self,i):
         """Apply monitor change and refresh valid resolution options."""
@@ -1398,6 +1471,15 @@ class MainGui(qtw.QMainWindow):
         """Collect settings form values and persist them to config file."""
         # Read current UI values and persist them back to config.
         # App settings.
+        required = ['logLevelInput','gestureModelInput','sampleRateInput',
+                    'initialChunkDerationInput','minimumChunkDerationInput',
+                    'chunkDecrementInput','linesCheckBoxInput',
+                    'confidenceThresholdInput','AutocorrectToggleInput',
+                    'AutocorrectThresholdInput','setWordGapInput',
+                    'PreviewToggleInput','ConfidenceToggleInput']
+        if any(not hasattr(self, a) for a in required):
+            self.logStatus("Settings UI not fully built yet", LogLevel.WARNING)
+            return
         self.newFullscreenMode = self.windowManager.mode
         self.newWidth = self.widthInput
         self.newHeight = (self.heightInput)
@@ -1442,7 +1524,8 @@ class MainGui(qtw.QMainWindow):
     # Don't really know if this is needed as I am pretty sure it calls the settings from the file everytime it is needed.
     def reloadSettings(self):
         """Placeholder hook for settings reload behavior."""
-        SETTINGS
+        global SETTINGS
+        SETTINGS = loadSettings()
 
     def confirmResetSettings(self):
         """Prompt user before resetting persisted settings to defaults."""
@@ -1481,7 +1564,6 @@ class MainGui(qtw.QMainWindow):
         if hasattr(self, "gestureThread"):
             self.gestureThread.quit()
             self.gestureThread.wait()
-        qtw.QApplication.quit()
         self.windowManager.saveState()
         # Persist final geometry/mode so next startup restores the same layout.
         ConfigAPI.update("app","width", self.windowManager.width)
@@ -1491,6 +1573,7 @@ class MainGui(qtw.QMainWindow):
         ConfigAPI.update("app","fullscreen_mode", self.windowManager.mode)
         ConfigAPI.update("app","monitor", self.windowManager.monitorIndex)
         super().closeEvent(event)
+        qtw.QApplication.quit()
 
 
 if __name__ == "__main__":
