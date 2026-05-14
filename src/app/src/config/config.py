@@ -17,7 +17,7 @@ DEFAULT_CONFIG = {
         "pos_y": 100,
         "monitor": 0,
         "dpi_scaling": True,
-        "camera": "0",
+        "camera": 0,
         "log_level": 1
     },
     "api": {

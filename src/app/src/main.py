@@ -36,7 +36,7 @@ import platform # Windows Camera module.
 from enum import IntEnum  # Strongly typed log level enum.
 import cv2  # Camera capture + frame preprocessing.
 from difflib import get_close_matches  # Dictionary autocorrect matching.
-from loadLogging import setupLogging
+from core.loadLogging import setupLogging
 from core.crashlogger import installCrashHandler
 import joblib
 
@@ -333,14 +333,7 @@ class WhisperWorker(qtc.QThread):
         self.lastText = ""
         self.running = True
         self.mic = sc.default_microphone()
-        try:
-            self.diarization_pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=HF_TOKEN or None
-            )
-        except Exception as e:
-            self.logMessage.emit(f"Diarization disabled: {e}", LogLevel.WARNING)
-            self.diarization_pipeline = None
+        self.diarization_pipeline = None
 
     def stop(self):
         """Request the worker loop to stop."""
@@ -358,6 +351,17 @@ class WhisperWorker(qtc.QThread):
         """Continuously capture microphone audio and emit incremental text."""
         self.model = WhisperManager.getModel()
         self.logMessage.emit("Loading Whisper model...", LogLevel.INFO)
+        self.model = WhisperManager.getModel()
+        self.logMessage.emit("Whisper model loaded", LogLevel.INFO)
+        try:
+            self.diarization_pipeline = Pipeline.from_pretrained(
+                "pyannote/speaker-diarization-3.1",
+                use_auth_token=HF_TOKEN or None
+            )
+            self.logMessage.emit("Diarization loaded", LogLevel.INFO)
+        except Exception as e:
+            self.logMessage.emit(f"Diarization disabled: {e}", LogLevel.WARNING)
+            self.diarization_pipeline = None
         recorded = np.zeros((0, 1), dtype=np.float32)
         while self.running:
             # Capture incrementally and keep a rolling 30s context to reduce resets.
@@ -438,12 +442,20 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
     gestureRecognized = qtc.pyqtSignal(str, float)
 
     def __init__(self, MODEL_PATH: str, LABEL_PATH: str, parent=None):
-        """Load sklearn gesture model + labels and initialize inference state."""
         super().__init__(parent)
-        self.clf = joblib.load(MODEL_PATH)
-        self.labels = open(LABEL_PATH).read().splitlines()
+        self.enabled = False  # disabled until model loads successfully
+        self.clf = None
+        try:
+            self.clf = joblib.load(MODEL_PATH)
+            self.enabled = True
+        except FileNotFoundError:
+            print(f"[WARNING] Model not found at {MODEL_PATH}. Train a model first.")
+        self.labels = []
+        try:
+            self.labels = open(LABEL_PATH).read().splitlines()
+        except FileNotFoundError:
+            print(f"[WARNING] Labels not found at {LABEL_PATH}.")
         self.running = False
-        self.enabled = True
         self.lastProcessTime = 0.0
         self.minInterval = 0.10
         self.lastEmitTime = 0
@@ -457,38 +469,33 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
 
     @qtc.pyqtSlot(np.ndarray)
     def processFrame(self, frame):
-        now = time.time()
-        if not self.enabled:
+        if not self.enabled or self.clf is None:
             return
+        now = time.time()
         if now - self.lastProcessTime < self.minInterval:
             return
         if frame is None:
             return
         self.lastProcessTime = now
-
         frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = self.mp_hands.process(rgb)
         if not result.multi_hand_landmarks:
             return
-
         lm = result.multi_hand_landmarks[0].landmark
         wrist = lm[0]
         vec = np.array([
             [l.x - wrist.x, l.y - wrist.y, l.z - wrist.z]
             for l in lm
         ]).flatten().astype(np.float32).reshape(1, 63)
-
         proba = self.clf.predict_proba(vec)[0]
         idx = int(np.argmax(proba))
         score = float(proba[idx])
         label = self.labels[idx] if idx < len(self.labels) else str(idx)
-
         if score > 0.5 and now - self.lastEmitTime > 0.3:
             self.lastEmitTime = now
             self.lastGesture = label
             self.gestureRecognized.emit(label, score)
-
 class MainGui(qtw.QMainWindow):
     frameForGesture = qtc.pyqtSignal(np.ndarray)
     def __init__(self):
