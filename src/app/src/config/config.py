@@ -16,7 +16,7 @@ DEFAULT_CONFIG = {
         "pos_x": 100,
         "pos_y": 100,
         "monitor": 0,
-        "dpi_scaling": "true",
+        "dpi_scaling": True,
         "camera": "0",
         "log_level": 1
     },
@@ -32,13 +32,13 @@ DEFAULT_CONFIG = {
         "init_chunk_der": 8.0,
         "min_chunk_der": 2.0,
         "chunk_dec": 1.0,
-        "lines": "false",
+        "lines": False,
         "confidence_threshold": 0.75,
-        "autocorrect": "true",
+        "autocorrect": True,
         "autocorrect_threshold": 0.85,
         "word_gap": 1.0,
-        "preview_toggle": "true",
-        "confidence_toggle": "true"
+        "preview_toggle": True,
+        "confidence_toggle": True
     },
     "env": {
         "hf_token": ""

@@ -16,3 +16,5 @@ def installCrashHandler():
         with open(CRASH_LOG, "a") as f:
             f.write(json.dumps(entry) + "\n")
         sys.__excepthook__(exc_type, exc_value, exc_tb)
+    
+    sys.excepthook = handler

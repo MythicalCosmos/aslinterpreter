@@ -134,80 +134,6 @@ def export_sklearn(clf, label_names):
     (DEPLOY_DIR / "labels.txt").write_text("\n".join(label_names))
     log("Model saved as asl_model.pkl")
 
-def export_task(tflite_bytes, label_names):
-    """
-    Produces src/deploy/asl_model.task
-
-    What a .task file actually is:
-    - It is a ZIP archive (you can open it with any zip tool to inspect it)
-    - It contains your .tflite model file
-    - It contains a labels.txt file listing one class per line
-    - It contains a metadata.json file describing the model inputs/outputs
-      so that any tool reading the .task file knows what the model expects
-
-    This format is compatible with tools that read .task files generically.
-    Note: This is NOT the same as the full MediaPipe gesture_recognizer.task
-    bundle (which also embeds palm detection and landmark models inside it).
-    That full bundle can only be produced by MediaPipe Model Maker on Linux.
-    This .task file is for standalone use with your custom inference code,
-    or for use with MediaPipe Studio for testing/visualization.
-    """
-    TASK_OUT = DEPLOY_DIR / "asl_model.task"
-
-    # Build a metadata dict that describes the model clearly
-    metadata = {
-        "name": "ASL Gesture Classifier",
-        "description": (
-            "Classifies ASL hand gestures from 63 normalized landmark floats "
-            "(21 landmarks x xyz, relative to wrist). "
-            "Input shape: [1, 63]. Output shape: [1, n_classes]."
-        ),
-        "version": "1.0",
-        "author": "ASL Interpreter Project",
-        "input": {
-            "name": "landmarks",
-            "description": (
-                "63 float32 values: 21 hand landmarks each with "
-                "x, y, z normalized relative to the wrist position."
-            ),
-            "shape": [1, 63],
-            "dtype": "float32"
-        },
-        "output": {
-            "name": "gesture_probabilities",
-            "description": "Softmax probability for each gesture class.",
-            "shape": [1, len(label_names)],
-            "dtype": "float32"
-        },
-        "labels": label_names,
-        "label_count": len(label_names),
-        "training_info": {
-            "landmark_normalization": "relative to wrist (landmark 0)",
-            "landmarks_per_hand": 21,
-            "coords_per_landmark": 3
-        }
-    }
-
-    # Write the .task file as a ZIP containing three files:
-    # 1. model.tflite  — the actual model weights
-    # 2. labels.txt    — one label per line, index matches model output index
-    # 3. metadata.json — human + machine readable description of the model
-    with zipfile.ZipFile(TASK_OUT, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        # The tflite model itself
-        zf.writestr("model.tflite", tflite_bytes)
-
-        # Labels file — one per line, index = class index in model output
-        zf.writestr("labels.txt", "\n".join(label_names))
-
-        # Metadata JSON
-        zf.writestr("metadata.json", json.dumps(metadata, indent=2))
-
-    log(f"Task file saved → {TASK_OUT}")
-    log(f"  Contents of {TASK_OUT.name}:")
-    log(f"    model.tflite  ({len(tflite_bytes):,} bytes)")
-    log(f"    labels.txt    ({len(label_names)} classes)")
-    log(f"    metadata.json (model description)")
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -216,13 +142,11 @@ if __name__ == "__main__":
     try:
         X, y, label_names = collect_dataset()
         clf, X_train, y_train = train_classifier(X, y, label_names)
-        tflite_bytes = export_sklearn(clf, X_train, y_train, label_names, X_all=X)
-        export_task(tflite_bytes, label_names)
+        export_sklearn(clf, label_names)
         log("=== Training Complete ===")
         log(f"Output files in {DEPLOY_DIR}:")
-        log(f"  asl_model.tflite  — load with tf.lite.Interpreter (your current code)")
-        log(f"  asl_model.task    — ZIP bundle with model + labels + metadata")
-        log(f"  labels.txt        — plain text labels")
+        log(f"  asl_model.pkl  — load with joblib.load()")
+        log(f"  labels.txt     — plain text labels")
     except Exception as e:
         log(f"[ERROR] Training failed: {e}")
         raise

@@ -36,8 +36,8 @@ import platform # Windows Camera module.
 from enum import IntEnum  # Strongly typed log level enum.
 import cv2  # Camera capture + frame preprocessing.
 from difflib import get_close_matches  # Dictionary autocorrect matching.
-from logging import setupLogging
-from crashlogger import installCrashHandler
+from loadLogging import setupLogging
+from core.crashlogger import installCrashHandler
 import joblib
 
 installCrashHandler()
@@ -59,7 +59,7 @@ DATASET_PATH = Path(__file__).parent.parent.parent / "shared/datasets"
 EXPORT_PATH = Path(__file__).parent.parent.parent / "shared/exports"
 SHARED_DIR   = Path(__file__).resolve().parent
 WORKER_LOG_PATH = SHARED_DIR.parent / "logs" / "training_log.txt"
-MODEL_PATH = Path(__file__).parent.parent.parent / "deploy/asl_model.tflite"
+MODEL_PATH = Path(__file__).parent.parent.parent / "deploy/asl_model.pkl"
 WORDLIST = Path(__file__).parent.parent.parent / "deploy/words.txt"
 LABELS_PATH = Path(__file__).parent.parent.parent / "deploy/labels.txt"
 MODEL_NAME = SETTINGS.gestures.gesture_model
@@ -438,31 +438,16 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
     gestureRecognized = qtc.pyqtSignal(str, float)
 
     def __init__(self, MODEL_PATH: str, LABEL_PATH: str, parent=None):
-        """Load TFLite gesture model + labels and initialize inference state."""
+        """Load sklearn gesture model + labels and initialize inference state."""
         super().__init__(parent)
         self.clf = joblib.load(MODEL_PATH)
         self.labels = open(LABEL_PATH).read().splitlines()
-        self.modelPath = MODEL_PATH
-        self.labels = open(LABEL_PATH).read().splitlines()
-
         self.running = False
         self.enabled = True
         self.lastProcessTime = 0.0
         self.minInterval = 0.10
-
-        # Load TFLite model
-        self.interpreter = tf.lite.Interpreter(model_path=self.modelPath)
-        self.interpreter.allocate_tensors()
-
-        # Input / Output info
-        self.input_details = self.interpreter.get_input_details()
-        self.output_details = self.interpreter.get_output_details()
-
-        self.input_shape = self.input_details[0]["shape"]
-        # input is [1, 63] — no height/width for landmark model
-
-        self.lastGesture = None
         self.lastEmitTime = 0
+        self.lastGesture = None
         self.mp_hands = mp.solutions.hands.Hands(
             static_image_mode=False,
             max_num_hands=1,
@@ -473,28 +458,20 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
     @qtc.pyqtSlot(np.ndarray)
     def processFrame(self, frame):
         now = time.time()
-
         if not self.enabled:
             return
         if now - self.lastProcessTime < self.minInterval:
             return
         if frame is None:
             return
-
         self.lastProcessTime = now
 
-        # Mirror so on-screen motion feels natural
         frame = cv2.flip(frame, 1)
-
-        # --- Step 1: Extract landmarks ---
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         result = self.mp_hands.process(rgb)
-
-        # If no hand is visible in this frame, do nothing
         if not result.multi_hand_landmarks:
             return
 
-        # --- Step 2: Build the 63-float input vector ---
         lm = result.multi_hand_landmarks[0].landmark
         wrist = lm[0]
         vec = np.array([
@@ -502,22 +479,15 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
             for l in lm
         ]).flatten().astype(np.float32).reshape(1, 63)
 
-        proba = self.clf.predict_proba(vec.reshape(1, -1))[0]
+        proba = self.clf.predict_proba(vec)[0]
         idx = int(np.argmax(proba))
         score = float(proba[idx])
-        if score > 0.5:
-            self.gestureRecognized.emit(self.labels[idx], score)
-
-        # --- Step 4: Emit result if confident enough ---
-        idx = int(np.argmax(output))
-        score = float(output[idx])
         label = self.labels[idx] if idx < len(self.labels) else str(idx)
 
-        if score > 0.5:
-            if now - self.lastEmitTime > 0.3:
-                self.lastEmitTime = now
-                self.lastGesture = label
-                self.gestureRecognized.emit(label, score)
+        if score > 0.5 and now - self.lastEmitTime > 0.3:
+            self.lastEmitTime = now
+            self.lastGesture = label
+            self.gestureRecognized.emit(label, score)
 
 class MainGui(qtw.QMainWindow):
     frameForGesture = qtc.pyqtSignal(np.ndarray)
@@ -1469,57 +1439,48 @@ class MainGui(qtw.QMainWindow):
     
     def updateSettings(self):
         """Collect settings form values and persist them to config file."""
-        # Read current UI values and persist them back to config.
-        # App settings.
-        required = ['logLevelInput','gestureModelInput','sampleRateInput',
-                    'initialChunkDerationInput','minimumChunkDerationInput',
-                    'chunkDecrementInput','linesCheckBoxInput',
-                    'confidenceThresholdInput','AutocorrectToggleInput',
-                    'AutocorrectThresholdInput','setWordGapInput',
-                    'PreviewToggleInput','ConfidenceToggleInput']
-        if any(not hasattr(self, a) for a in required):
-            self.logStatus("Settings UI not fully built yet", LogLevel.WARNING)
-            return
+        # Save window/display settings
         self.newFullscreenMode = self.windowManager.mode
         self.newWidth = self.widthInput
-        self.newHeight = (self.heightInput)
-        self.setLogLevel = (self.logLevelInput)
-        # Gesture settings.
-        self.newGesturesName = self.gestureModelInput
-        # Control/transcription settings.
-        self.newExampleAmount = int(self.visualizeModelExamplesInput.text())
-        self.newSampleRate = self.sampleRateInput
-        self.newInitialChunkDeration = self.initialChunkDerationInput
-        self.newMinimumChunkDeration = self.minimumChunkDerationInput
-        self.newChunkDecrement = self.chunkDecrementInput
-        self.linesBool = bool(self.linesCheckBoxInput)
-        self.newConfidenceThreshold = self.confidenceThresholdInput
-        self.setAutocorrectToggle = bool(self.AutocorrectToggleInput)
-        self.setAutocorrectThreshold = self.AutocorrectThresholdInput
-        self.setWordGap = self.setWordGapInput
-        self.setPreviewToggle = bool(self.PreviewToggleInput)
-        self.setConfidenceToggle = bool(self.ConfidenceToggleInput)
-        # Writes are intentionally explicit per key to keep config errors local.
-        # Write app settings.
+        self.newHeight = self.heightInput
+
+        # Validate and save example count from text input
+        examplesText = self.visualizeModelExamplesInput.text().strip()
+        self.newExampleAmount = int(examplesText) if examplesText.isdigit() else NUM_EXAMPLES
+
+        # Write display/window settings
         ConfigAPI.update("app", "fullscreen_mode", self.newFullscreenMode)
-        ConfigAPI.update("app", "width", self.newWidth)
-        ConfigAPI.update("app", "height", self.newHeight)
-        ConfigAPI.update("app", "log_level", self.setLogLevel)
-        # Write gesture settings.
-        ConfigAPI.update("gestures", "gesture_model", self.newGesturesName)
-        # Write control settings.
+        ConfigAPI.update("app", "log_level", self.logLevelInput.currentIndex())
+        ConfigAPI.update("app", "monitor", self.windowManager.monitorIndex)
+
+        # Only write width/height if they were actually set by the resolution menu
+        if self.newWidth is not None:
+            ConfigAPI.update("app", "width", self.newWidth)
+        if self.newHeight is not None:
+            ConfigAPI.update("app", "height", self.newHeight)
+
+        # Write camera setting from the camera dropdown
+        camData = self.cameraMenu.currentData()
+        if camData is not None:
+            ConfigAPI.update("app", "camera", camData)
+
+        # Write inference/transcription settings using correct Qt value accessors
         ConfigAPI.update("settings", "examples", self.newExampleAmount)
-        ConfigAPI.update("settings", "sam_rate", self.newSampleRate)
-        ConfigAPI.update("settings", "init_chunk_der", self.newInitialChunkDeration)
-        ConfigAPI.update("settings", "min_chunk_der", self.newMinimumChunkDeration)
-        ConfigAPI.update("settings", "chunk_dec", self.newChunkDecrement)
-        ConfigAPI.update("settings", "lines", self.linesBool)
-        ConfigAPI.update("settings", "confidence_threshold", self.newConfidenceThreshold)
-        ConfigAPI.update("settings", "autocorrect", self.setAutocorrectToggle)
-        ConfigAPI.update("settings", "autocorrect_threshold", self.setAutocorrectThreshold)
-        ConfigAPI.update("settings", "word_gap", self.setWordGap)
-        ConfigAPI.update("settings", "preview_toggle", self.setPreviewToggle)
-        ConfigAPI.update("settings", "confidence_toggle", self.setConfidenceToggle)
+        ConfigAPI.update("settings", "sam_rate", self.sampleRateInput.value())
+        ConfigAPI.update("settings", "init_chunk_der", self.initialChunkDerationInput.value())
+        ConfigAPI.update("settings", "min_chunk_der", self.minimumChunkDerationInput.value())
+        ConfigAPI.update("settings", "chunk_dec", self.chunkDecrementInput.value())
+        ConfigAPI.update("settings", "lines", self.linesCheckBoxInput.isChecked())
+        ConfigAPI.update("settings", "confidence_threshold", self.confidenceThresholdInput.value())
+        ConfigAPI.update("settings", "autocorrect", self.AutocorrectToggleInput.isChecked())
+
+        # Apply log level change immediately to all active loggers
+        newLevel = self.logLevelInput.currentIndex()
+        self.runtimeLogger.setLevel(newLevel)
+        self.translatorLogger.setLevel(newLevel)
+        self.workerLogger.setLevel(newLevel)
+
+        self.logStatus("Settings saved successfully", LogLevel.INFO)    
 
     # Don't really know if this is needed as I am pretty sure it calls the settings from the file everytime it is needed.
     def reloadSettings(self):
