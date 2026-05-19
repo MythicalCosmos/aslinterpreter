@@ -7,7 +7,9 @@ from config.writer import ConfigAPI  # Read/update config values on disk.
 import mediapipe as mp  # Optional hand-landmark visualization helpers.
 import os  # Filesystem utilities and Explorer launch.
 from mediapipe.tasks import python  # MediaPipe task runtime bindings.
-from mediapipe.tasks.python import vision  # Vision task namespace.
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+
 import matplotlib.pyplot as plt  # Dataset sample preview plots.
 from datetime import datetime  # Timestamping logs and captured frames.
 
@@ -460,12 +462,37 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
         self.minInterval = 0.10
         self.lastEmitTime = 0
         self.lastGesture = None
-        self.mp_hands = mp.solutions.hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
+        self.mp_hands = None
+        self.hand_tracking_enabled = False
+
+        try:
+            model_path = Path(MODEL_PATH)
+
+            if not model_path.exists():
+                print(f"[WARNING] Hand model not found: {model_path}")
+                print("[INFO] Hand tracking disabled.")
+
+            else:
+                base_options = python.BaseOptions(
+                    model_asset_path=str(model_path)
+                )
+
+                options = vision.HandLandmarkerOptions(
+                    base_options=base_options,
+                    num_hands=2,
+                    min_hand_detection_confidence=0.5,
+                    min_tracking_confidence=0.5
+                )
+
+                self.mp_hands = vision.HandLandmarker.create_from_options(options)
+
+                self.hand_tracking_enabled = True
+                print("[INFO] Hand tracking initialized successfully.")
+
+        except Exception as e:
+            print(f"[ERROR] Failed to initialize hand tracking: {e}")
+            self.mp_hands = None
+            self.hand_tracking_enabled = False
 
     @qtc.pyqtSlot(np.ndarray)
     def processFrame(self, frame):
@@ -479,7 +506,10 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
         self.lastProcessTime = now
         frame = cv2.flip(frame, 1)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = self.mp_hands.process(rgb)
+        if self.mp_hands is not None:
+            result = self.mp_hands.process(rgb)
+        else:
+            result = None
         if not result.multi_hand_landmarks:
             return
         lm = result.multi_hand_landmarks[0].landmark
