@@ -1,0 +1,18 @@
+{
+  "trained_at": "2026-06-15T17:17:37.980095",
+  "labels": [
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+    "g",
+    "h"
+  ],
+  "num_classes": 8,
+  "accuracy": 0.9991,
+  "model_type": "ensemble",
+  "augmented": true,
+  "dataset_path": "C:\\ASL project enviorment\\asl-dev\\aslinterpreter-main\\shared\\datasets"
+}

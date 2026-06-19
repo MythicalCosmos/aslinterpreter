@@ -1,0 +1,36 @@
+# Training datasets (captured images — large, regenerable via Model Maker)
+shared/datasets/
+src/shared/datasets/
+
+# Model files (downloaded by setup.py — too large for git)
+src/deploy/hand_landmarker.task
+
+# Trained models (generated, not source)
+#src/deploy/asl_model.pkl
+#src/deploy/model_meta.json
+
+# Logs
+*.log
+shared/logs/
+src/shared/logs/
+src/logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Runtime config — stores machine-specific state (window position, camera index)
+src/app/src/config/config.dev.toml
+
+
+# macOS
+.DS_Store
+shared/logs/app.log

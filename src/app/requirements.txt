@@ -1,0 +1,34 @@
+# Core UI
+PyQt6>=6.4.0
+
+# Computer vision + hand tracking
+mediapipe>=0.10.14
+opencv-python>=4.8.0
+
+# Speech transcription
+faster-whisper>=1.0.0
+
+# Optional diarization (requires HuggingFace token)
+pyannote.audio>=3.1.0
+
+# Audio I/O
+soundcard>=0.4.2
+soundfile>=0.12.1
+
+# ML / data
+scikit-learn>=1.4.0
+numpy>=1.26.0
+joblib>=1.3.0
+
+# Visualization (model preview)
+matplotlib>=3.8.0
+
+# Config
+tomli>=2.0.1
+toml>=0.10.2
+pydantic>=2.5.0
+
+# HTTP (setup.py model download)
+requests>=2.31.0
+
+# NOTE: tensorflow is NOT required — the project uses scikit-learn

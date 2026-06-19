@@ -1,0 +1,34 @@
+[
+    {
+        "name": "a",
+        "image_count": 125
+    },
+    {
+        "name": "b",
+        "image_count": 81
+    },
+    {
+        "name": "c",
+        "image_count": 93
+    },
+    {
+        "name": "d",
+        "image_count": 101
+    },
+    {
+        "name": "e",
+        "image_count": 107
+    },
+    {
+        "name": "f",
+        "image_count": 80
+    },
+    {
+        "name": "g",
+        "image_count": 91
+    },
+    {
+        "name": "h",
+        "image_count": 99
+    }
+]
