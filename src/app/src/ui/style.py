@@ -1,27 +1,27 @@
 import main
-if main.theme == "Dark":
-    ACCENT   = "#00D4AA"    # Electric teal
-    ACCENT2  = "#F5A623"    # Warm amber (confidence / warnings)
-    DANGER   = "#FF4757"    # Red (errors)
-    BG0      = "#0D0F14"    # Deepest background
-    BG1      = "#13161D"    # Card background
-    BG2      = "#1A1E28"    # Elevated surface
-    BG3      = "#222636"    # Border / separator
-    TEXT0    = "#E8EAF0"    # Primary text
-    TEXT1    = "#9BA3B8"    # Secondary text
-    TEXT2    = "#5C6478"    # Muted / placeholder
+#if main.theme == "Dark":
+ACCENT   = "#00D4AA"    # Electric teal
+ACCENT2  = "#F5A623"    # Warm amber (confidence / warnings)
+DANGER   = "#FF4757"    # Red (errors)
+BG0      = "#0D0F14"    # Deepest background
+BG1      = "#13161D"    # Card background
+BG2      = "#1A1E28"    # Elevated surface
+BG3      = "#222636"    # Border / separator
+TEXT0    = "#E8EAF0"    # Primary text
+TEXT1    = "#9BA3B8"    # Secondary text
+TEXT2    = "#5C6478"    # Muted / placeholder
 
-if main.theme == "Light":
-            ACCENT   = "#007ACC"    # Blue (primary)
-            ACCENT2  = "#FFA500"    # Orange (confidence / warnings)
-            DANGER   = "#FF4757"    # Red (errors)
-            BG0      = "#FFFFFF"    # Deepest background
-            BG1      = "#F5F5F5"    # Card background
-            BG2      = "#E0E0E0"    # Elevated surface
-            BG3      = "#CCCCCC"    # Border / separator
-            TEXT0    = "#333333"    # Primary text
-            TEXT1    = "#666666"    # Secondary text
-            TEXT2    = "#999999"    # Muted / placeholder 
+#if main.theme == "Light":
+            #ACCENT   = "#007ACC"    # Blue (primary)
+            #ACCENT2  = "#FFA500"    # Orange (confidence / warnings)
+            #DANGER   = "#FF4757"    # Red (errors)
+            #BG0      = "#FFFFFF"    # Deepest background
+            #BG1      = "#F5F5F5"    # Card background
+            #BG2      = "#E0E0E0"    # Elevated surface
+            #BG3      = "#CCCCCC"    # Border / separator
+            #TEXT0    = "#333333"    # Primary text
+            #TEXT1    = "#666666"    # Secondary text
+            #TEXT2    = "#999999"    # Muted / placeholder 
 
 STYLESHEET = f"""
 /* ── Base ───────────────────────────────────────────────────────────── */
