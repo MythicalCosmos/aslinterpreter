@@ -21,3 +21,8 @@ PyAudio
 NumPy
 scikit-learn
 
+-------------------------
+How to run
+Download the aslinterpreter-main.zip
+Go to "aslinterpreter-main\src\scripts" and run the Python file "setup.py"
+Then go to "aslinterpreter-main\src\app\src" and run the Python file "main.py"; this is the app.
