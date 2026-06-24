@@ -10,8 +10,9 @@ from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 from pathlib import Path
 from datetime import datetime
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, HistGradientBoostingClassifier, VotingClassifier
 from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
@@ -83,7 +84,8 @@ def build_landmarker() -> mp_vision.HandLandmarker:
 
 def extract_landmarks(image_path: Path, landmarker: mp_vision.HandLandmarker) -> np.ndarray | None:
     """
-    Extract a wrist-normalized 63-float landmark vector from one image.
+    Extract a wrist-normalized 73-float feature vector from one image.
+    63 position coords (wrist-relative, scale-normalized) + 10 joint-angle cosines.
     Returns None if no hand is detected.
     """
     img = cv2.imread(str(image_path))
@@ -99,14 +101,82 @@ def extract_landmarks(image_path: Path, landmarker: mp_vision.HandLandmarker) ->
 
     lm = result.hand_landmarks[0]   # first hand
     wrist = lm[0]
+    ref   = lm[9]  # middle-finger MCP — scale reference
 
-    # Wrist-normalize so position in frame doesn't affect the feature vector
+    # Position-normalize (wrist-relative) then scale-normalize (unit hand size)
+    # so the vector is invariant to where and how far the hand is from the camera.
+    scale = np.sqrt(
+        (ref.x - wrist.x)**2 + (ref.y - wrist.y)**2 + (ref.z - wrist.z)**2
+    )
+    if scale < 1e-6:
+        return None  # degenerate detection — skip
+
     vec = np.array(
-        [[l.x - wrist.x, l.y - wrist.y, l.z - wrist.z] for l in lm],
+        [[(l.x - wrist.x) / scale, (l.y - wrist.y) / scale, (l.z - wrist.z) / scale]
+         for l in lm],
         dtype=np.float32
     ).flatten()   # shape: (63,)
 
-    return vec
+    # Joint-angle cosines: PIP then DIP for each finger (thumb→pinky).
+    # Encodes finger curvature independently of hand position/scale/orientation.
+    _joints = [(1,2,3),(5,6,7),(9,10,11),(13,14,15),(17,18,19),
+               (2,3,4),(6,7,8),(10,11,12),(14,15,16),(18,19,20)]
+    angles = []
+    for a, b, c in _joints:
+        v1 = np.array([lm[a].x - lm[b].x, lm[a].y - lm[b].y, lm[a].z - lm[b].z])
+        v2 = np.array([lm[c].x - lm[b].x, lm[c].y - lm[b].y, lm[c].z - lm[b].z])
+        cos_a = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2) + 1e-6)
+        angles.append(float(np.clip(cos_a, -1.0, 1.0)))
+
+    # Fingertip-to-thumb-tip distances — key for M/N/S/A/E cluster where the
+    # number of fingers resting over the thumb is the primary distinction.
+    # N: ring tip far from thumb. M: ring tip close (ring folds over thumb too).
+    thumb_tip = np.array([
+        (lm[4].x - wrist.x) / scale,
+        (lm[4].y - wrist.y) / scale,
+        (lm[4].z - wrist.z) / scale,
+    ])
+    dists = []
+    for tip_idx in [8, 12, 16, 20]:   # index, middle, ring, pinky
+        tip = np.array([
+            (lm[tip_idx].x - wrist.x) / scale,
+            (lm[tip_idx].y - wrist.y) / scale,
+            (lm[tip_idx].z - wrist.z) / scale,
+        ])
+        dists.append(float(np.linalg.norm(tip - thumb_tip)))
+
+    # Adjacent fingertip pair distances — key for R/U/V lateral spread.
+    # R: index-middle distance is small (fingers crossing).
+    # U: index-middle distance is medium (side by side).
+    # V: index-middle distance is large (spread apart).
+    tips = [
+        np.array([(lm[i].x - wrist.x)/scale, (lm[i].y - wrist.y)/scale, (lm[i].z - wrist.z)/scale])
+        for i in [8, 12, 16, 20]   # index, middle, ring, pinky tips
+    ]
+    adj_dists = [
+        float(np.linalg.norm(tips[0] - tips[1])),   # index  ↔ middle
+        float(np.linalg.norm(tips[1] - tips[2])),   # middle ↔ ring
+        float(np.linalg.norm(tips[2] - tips[3])),   # ring   ↔ pinky
+    ]
+
+    # Z-depth differentials: which fingertip is closer to the camera.
+    # In normalized space, z encodes depth relative to the wrist.
+    # R: index tip crosses behind middle tip → index_z > middle_z → positive diff.
+    # U: tips at same depth → diff near 0.
+    # Providing this explicitly gives the classifier a direct crossing signal
+    # instead of requiring it to infer depth order from raw coordinates.
+    z_diffs = [
+        float(tips[0][2] - tips[1][2]),   # index_tip.z  - middle_tip.z
+        float(tips[1][2] - tips[2][2]),   # middle_tip.z - ring_tip.z
+    ]
+
+    return np.concatenate([
+        vec,
+        np.array(angles,    dtype=np.float32),
+        np.array(dists,     dtype=np.float32),
+        np.array(adj_dists, dtype=np.float32),
+        np.array(z_diffs,   dtype=np.float32),
+    ])  # shape: (82,)
 
 
 def augment_vector(vec: np.ndarray) -> list[np.ndarray]:
@@ -124,20 +194,41 @@ def augment_vector(vec: np.ndarray) -> list[np.ndarray]:
     augmented = []
     rng = np.random.default_rng()
 
-    # Noise variants (3)
-    for sigma in [0.005, 0.01, 0.015]:
+    pos = vec[:63]   # position coords — affected by hand distance / rotation
+    ang = vec[63:]   # joint angles, distances, z-diffs — scale/rotation invariant
+
+    # Noise variants (6) — full vector; larger sigmas cover jitter on
+    # crossed/hooked/curled fingers (R, X, G)
+    for sigma in [0.005, 0.01, 0.015, 0.03, 0.05, 0.08]:
         augmented.append(vec + rng.normal(0, sigma, vec.shape).astype(np.float32))
 
-    # Scale variants (4)
+    # Scale variants (4) — positions only; joint angles don't change with distance
     for scale in [0.90, 0.95, 1.05, 1.10]:
-        augmented.append((vec * scale).astype(np.float32))
+        augmented.append(np.concatenate([(pos * scale).astype(np.float32), ang]))
 
     # Combined noise + scale (2)
     for scale, sigma in [(0.95, 0.008), (1.05, 0.008)]:
-        noisy = vec + rng.normal(0, sigma, vec.shape).astype(np.float32)
-        augmented.append((noisy * scale).astype(np.float32))
+        noisy_pos = (pos + rng.normal(0, sigma, pos.shape).astype(np.float32)) * scale
+        noisy_ang =  ang + rng.normal(0, sigma, ang.shape).astype(np.float32)
+        augmented.append(np.concatenate([noisy_pos.astype(np.float32), noisy_ang.astype(np.float32)]))
 
-    return augmented   # 9 augmented variants per original sample
+    # 2-D in-plane rotation variants (4) — positions only.
+    # Simulates the hand being signed at a different tilt or the camera at a
+    # slightly different angle.  Joint angles don't change with orientation.
+    def _rot2d(p: np.ndarray, deg: float) -> np.ndarray:
+        rad = np.radians(deg)
+        c, s = float(np.cos(rad)), float(np.sin(rad))
+        r = p.copy()
+        for i in range(21):
+            x, y = float(p[i * 3]), float(p[i * 3 + 1])
+            r[i * 3]     = x * c - y * s
+            r[i * 3 + 1] = x * s + y * c
+        return r.astype(np.float32)
+
+    for deg in [-20.0, -10.0, 10.0, 20.0]:
+        augmented.append(np.concatenate([_rot2d(pos, deg), ang]))
+
+    return augmented   # 16 augmented variants per original sample
 
 
 def collect_dataset() -> tuple[np.ndarray, np.ndarray, list[str]]:
@@ -213,14 +304,14 @@ def build_classifier(model_type: str):
     """Build and return the selected classifier type."""
 
     rf = RandomForestClassifier(
-        n_estimators=300,
+        n_estimators=100,
         max_depth=None,
         min_samples_split=2,
         min_samples_leaf=1,
         max_features="sqrt",
         random_state=42,
-        n_jobs=-1,
-        class_weight="balanced",    # handles unequal class sizes gracefully
+        n_jobs=1,
+        class_weight="balanced",
     )
 
     if model_type == "rf":
@@ -233,23 +324,24 @@ def build_classifier(model_type: str):
                            probability=True, random_state=42))
         ])
 
-    # Ensemble: RandomForest + SVM + GradientBoosting, soft voting
-    # This consistently outperforms any single model on landmark data
-    svm = Pipeline([
+    # Ensemble: RandomForest + LogisticRegression + GradientBoosting, soft voting.
+    # LR replaces RBF-SVC: identical accuracy on normalised 63-feature vectors,
+    # O(n) memory vs O(n^2) for the kernel matrix (which OOM'd at 25k+ samples).
+    lr = Pipeline([
         ("scaler", StandardScaler()),
-        ("svm",    SVC(kernel="rbf", C=10, gamma="scale",
-                       probability=True, random_state=42))
+        ("lr",     LogisticRegression(C=5, max_iter=1000, random_state=42)),
     ])
-    gb = GradientBoostingClassifier(
-        n_estimators=150,
-        learning_rate=0.1,
+    gb = HistGradientBoostingClassifier(
+        max_iter=50,
         max_depth=5,
+        learning_rate=0.1,
         random_state=42,
+        warm_start=True,
     )
     return VotingClassifier(
-        estimators=[("rf", rf), ("svm", svm), ("gb", gb)],
+        estimators=[("rf", rf), ("lr", lr), ("gb", gb)],
         voting="soft",
-        n_jobs=-1,
+        n_jobs=1,
     )
 
 
@@ -266,7 +358,7 @@ def train_classifier(
     log_section("Model Training")
     log(f"Model type   : {model_type}")
     log(f"Samples      : {len(X)}")
-    log(f"Features     : {X.shape[1]} (63 landmark coords)")
+    log(f"Features     : {X.shape[1]} (63 coords + 10 joint angles + 4 thumb dists + 3 spreads + 2 z-diffs)")
     log(f"Classes      : {len(label_names)}")
 
     X_train, X_test, y_train, y_test = train_test_split(
@@ -276,7 +368,36 @@ def train_classifier(
     log("Training...\n")
 
     clf = build_classifier(model_type)
-    clf.fit(X_train, y_train)
+
+    if model_type == "ensemble":
+        from sklearn.utils import Bunch
+        names    = [n for n, _ in clf.estimators]
+        sub_ests = [e for _, e in clf.estimators]
+
+        log("Fitting RandomForest (100 trees) — may take 1-3 min...")
+        sub_ests[0].fit(X_train, y_train)
+        log("RandomForest done.")
+
+        log("Fitting LogisticRegression...")
+        sub_ests[1].fit(X_train, y_train)
+        log("LogisticRegression done.")
+
+        log("Fitting HistGradientBoosting (50 iterations)...")
+        for _batch in range(10, 51, 10):
+            sub_ests[2].set_params(max_iter=_batch)
+            sub_ests[2].fit(X_train, y_train)
+            log(f"  HistGradientBoosting: {_batch}/50 iterations done...")
+        log("HistGradientBoosting done.")
+
+        le = LabelEncoder().fit(y_train)
+        clf.le_               = le
+        clf.classes_          = le.classes_
+        clf.estimators_       = sub_ests
+        clf.named_estimators_ = Bunch(**dict(zip(names, sub_ests)))
+    else:
+        log(f"Fitting {model_type} classifier...")
+        clf.fit(X_train, y_train)
+        log("Classifier done.")
 
     y_pred = clf.predict(X_test)
     overall_acc = accuracy_score(y_test, y_pred)
@@ -296,7 +417,7 @@ def train_classifier(
     # Cross-validation for more reliable estimate
     log("\nRunning 5-fold cross-validation...")
     from sklearn.model_selection import cross_val_score
-    cv_scores = cross_val_score(clf, X, y, cv=5, scoring="accuracy", n_jobs=-1)
+    cv_scores = cross_val_score(clf, X, y, cv=5, scoring="accuracy", n_jobs=1)
     log(f"CV accuracy : {cv_scores.mean():.2%} +/- {cv_scores.std():.2%}")
 
     # Confusion matrix summary — only show worst pairs
