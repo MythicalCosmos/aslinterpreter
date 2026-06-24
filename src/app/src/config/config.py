@@ -35,8 +35,8 @@ DEFAULT_CONFIG = {
         "lines": False,
         "confidence_threshold": 0.75,
         "autocorrect": True,
-        "autocorrect_threshold": 0.85,
-        "word_gap": 1.0,
+        "autocorrect_threshold": 0.75,
+        "word_gap": 3.0,
         "preview_toggle": True,
         "confidence_toggle": True
     },
