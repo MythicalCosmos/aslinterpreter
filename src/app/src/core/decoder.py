@@ -19,7 +19,7 @@ class WordDecoder:
         t = t or time.time()
         self.lastTime = t
         self.buffer.append(letter.upper())
-        return " ".join(self.buffer)
+        return "".join(self.buffer)
 
     def shouldFlush(self) -> bool:
         """Return True when the inter-letter gap exceeds WORD_GAP seconds."""
@@ -46,12 +46,17 @@ class WordDecoder:
             corrected = self._autocorrect(raw)
             if corrected:
                 return corrected, self._wordConfidence(corrected), "auto"
+            deduped = self._deduplicate(raw)
+            if deduped != raw:
+                corrected = self._autocorrect(deduped)
+                if corrected:
+                    return corrected, self._wordConfidence(corrected), "auto"
 
         conf = self._wordConfidence(raw)
         if conf >= CONFIDENCE_THRESHOLD:
             return raw, conf, "word"
 
-        return " ".join(raw), 0.0, "letters"
+        return raw, 0.0, "letters"
 
     def clear(self) -> None:
         """Discard the current buffer without flushing."""
@@ -62,13 +67,22 @@ class WordDecoder:
         """Remove the last letter from the buffer. Returns updated preview."""
         if self.buffer:
             self.buffer.pop()
-        return " ".join(self.buffer)
+        return "".join(self.buffer)
 
     # ── Private helpers ───────────────────────────────────────────────────
 
     def _autocorrect(self, word: str) -> Optional[str]:
         matches = get_close_matches(word, self.wordSet, n=1, cutoff=AUTOCORRECT_THRESHOLD)
         return matches[0] if matches else None
+
+    def _deduplicate(self, word: str) -> str:
+        if not word:
+            return word
+        result = word[0]
+        for ch in word[1:]:
+            if ch != result[-1]:
+                result += ch
+        return result
 
     def _wordConfidence(self, word: str, max_len: int = 12) -> float:
         """Score 0.6-1.0 for known words, 0.0 for unknown."""
