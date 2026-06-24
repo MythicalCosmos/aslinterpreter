@@ -269,7 +269,7 @@ class WordDecoder:
         t = t or time.time()
         self.lastTime = t
         self.buffer.append(letter.upper())
-        return " ".join(self.buffer)
+        return "".join(self.buffer)
 
     def shouldFlush(self) -> bool:
         return bool(
@@ -297,7 +297,7 @@ class WordDecoder:
             if conf >= CONFIDENCE_THRESHOLD:
                 result, tag = word, "word"
             else:
-                result, tag = " ".join(self.buffer), "letters"
+                result, tag = word, "letters"
         self.buffer.clear()
         self.lastTime = None
         return result, conf, tag
@@ -309,7 +309,7 @@ class WordDecoder:
     def deleteLast(self) -> str:
         if self.buffer:
             self.buffer.pop()
-        return " ".join(self.buffer)
+        return "".join(self.buffer)
 
 
 # ── WhisperWorker ─────────────────────────────────────────────────────────
@@ -376,29 +376,55 @@ class TTSWorker(threading.Thread):
         super().__init__(daemon=True, name="TTSWorker")
         self._q: queue.Queue = queue.Queue()
         self.available = False
+        self._use_say = False
 
     def run(self) -> None:
-        import pyttsx3
-        engine = pyttsx3.init()
-        self.available = True
+        import sys
+        engine = None
+
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            self.available = True
+        except Exception as e:
+            print(f"[WARNING] pyttsx3 init failed: {e}")
+
+        if not self.available and sys.platform == "darwin":
+            import subprocess
+            try:
+                subprocess.run(["say", ""], timeout=5, capture_output=True, check=False)
+                self._use_say = True
+                self.available = True
+            except Exception as e:
+                print(f"[WARNING] macOS 'say' fallback failed: {e}")
+
+        if not self.available:
+            return
+
         while True:
-            text = self._q.get()
+            try:
+                text = self._q.get(timeout=0.5)
+            except queue.Empty:
+                continue
             if text is None:
                 break
             try:
-                engine.say(text)
-                engine.startLoop()
-                
+                if self._use_say:
+                    import subprocess
+                    subprocess.run(["say", text], timeout=30, check=False)
+                else:
+                    engine.say(text)
+                    engine.runAndWait()
             except Exception as e:
                 print(f"[WARNING] TTS speak error: {e}")
-            
-
 
     def speak(self, text: str) -> None:
         if self.available:
             self._q.put(text)
 
-    
+    def stop(self) -> None:
+        self._q.put(None)
+
 
 
 # ── AspectRatioWidget ─────────────────────────────────────────────────────
@@ -478,9 +504,12 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
         self.mp_hands              = None
         self.hand_tracking_enabled = False
         self.lastProcessTime       = 0.0
-        self.minInterval           = 0.30
+        self.minInterval           = 0.15
         self.lastEmitTime          = 0.0
         self.lastGesture           = None
+        self._stabilityLabel       = None
+        self._stabilityCount       = 0
+        self._prevVec              = None   # motion gate: previous frame's position vector
 
         # Load sklearn classifier
         try:
@@ -545,12 +574,89 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
 
         lm    = result.hand_landmarks[0]
         wrist = lm[0]
-        vec   = np.array(
-            [[l.x - wrist.x, l.y - wrist.y, l.z - wrist.z] for l in lm],
+        ref   = lm[9]  # middle-finger MCP — used as scale reference
+        scale = float(np.sqrt(
+            (ref.x - wrist.x)**2 + (ref.y - wrist.y)**2 + (ref.z - wrist.z)**2
+        ))
+        if scale < 1e-6:
+            return
+        vec_flat = np.array(
+            [[(l.x - wrist.x) / scale, (l.y - wrist.y) / scale, (l.z - wrist.z) / scale]
+             for l in lm],
             dtype=np.float32
-        ).flatten().reshape(1, 63)
+        ).flatten()
 
-        proba = self.clf.predict_proba(vec)[0]
+        # Motion gate: skip frames where the hand is moving too fast (waving,
+        # transitioning orientation).  Preserves the current stability count so
+        # a brief movement doesn't wipe accumulated progress on a held sign.
+        if self._prevVec is not None:
+            _motion = float(np.linalg.norm(vec_flat - self._prevVec))
+            self._prevVec = vec_flat.copy()
+            if _motion > 2.0:
+                return
+        else:
+            self._prevVec = vec_flat.copy()
+        _joints = [(1,2,3),(5,6,7),(9,10,11),(13,14,15),(17,18,19),
+                   (2,3,4),(6,7,8),(10,11,12),(14,15,16),(18,19,20)]
+        _angles = []
+        for _a, _b, _c in _joints:
+            _v1 = np.array([lm[_a].x-lm[_b].x, lm[_a].y-lm[_b].y, lm[_a].z-lm[_b].z])
+            _v2 = np.array([lm[_c].x-lm[_b].x, lm[_c].y-lm[_b].y, lm[_c].z-lm[_b].z])
+            _cos = np.dot(_v1, _v2) / (np.linalg.norm(_v1) * np.linalg.norm(_v2) + 1e-6)
+            _angles.append(float(np.clip(_cos, -1.0, 1.0)))
+        _thumb = np.array([
+            (lm[4].x - wrist.x) / scale,
+            (lm[4].y - wrist.y) / scale,
+            (lm[4].z - wrist.z) / scale,
+        ])
+        _dists = []
+        for _t in [8, 12, 16, 20]:   # index, middle, ring, pinky tips
+            _tip = np.array([
+                (lm[_t].x - wrist.x) / scale,
+                (lm[_t].y - wrist.y) / scale,
+                (lm[_t].z - wrist.z) / scale,
+            ])
+            _dists.append(float(np.linalg.norm(_tip - _thumb)))
+        _tips = [
+            np.array([(lm[i].x-wrist.x)/scale, (lm[i].y-wrist.y)/scale, (lm[i].z-wrist.z)/scale])
+            for i in [8, 12, 16, 20]
+        ]
+        _adj = [
+            float(np.linalg.norm(_tips[0] - _tips[1])),
+            float(np.linalg.norm(_tips[1] - _tips[2])),
+            float(np.linalg.norm(_tips[2] - _tips[3])),
+        ]
+        # Z-depth differentials: index-middle and middle-ring crossing depth.
+        # Directly encodes which finger is "in front" — key for R (index behind
+        # middle) vs U (same depth) vs V (same depth, wider spread).
+        _zdiff = [
+            float(_tips[0][2] - _tips[1][2]),   # index_tip.z - middle_tip.z
+            float(_tips[1][2] - _tips[2][2]),   # middle_tip.z - ring_tip.z
+        ]
+
+        _n_feat = getattr(self.clf, 'n_features_in_', 80)
+        if _n_feat >= 82:
+            vec = np.concatenate([
+                vec_flat,
+                np.array(_angles,   dtype=np.float32),
+                np.array(_dists,    dtype=np.float32),
+                np.array(_adj,      dtype=np.float32),
+                np.array(_zdiff,    dtype=np.float32),
+            ]).reshape(1, 82)
+        else:
+            vec = np.concatenate([
+                vec_flat,
+                np.array(_angles,   dtype=np.float32),
+                np.array(_dists,    dtype=np.float32),
+                np.array(_adj,      dtype=np.float32),
+            ]).reshape(1, 80)
+
+        try:
+            proba = self.clf.predict_proba(vec)[0]
+        except ValueError:
+            # Feature count mismatch — model was trained with different features.
+            # Retrain the model to fix this.
+            return
         idx   = int(np.argmax(proba))
         score = float(proba[idx])
         label = self.labels[idx] if idx < len(self.labels) else str(idx)
@@ -559,10 +665,33 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
 
         self.landmarksReady.emit(result.hand_landmarks[0], frame_flipped.shape[:2])
 
-        if score > CONFIDENCE_THRESHOLD and now - self.lastEmitTime > 1.0:
+        # Sticky stability window: a wrong frame costs 1 point instead of
+        # resetting to zero.  This lets R survive the occasional U frame that
+        # MediaPipe emits when tracking crossed fingers, without lowering the
+        # bar for genuinely ambiguous or transitional poses.
+        if label == self._stabilityLabel:
+            self._stabilityCount += 1
+        else:
+            self._stabilityCount -= 1
+            if self._stabilityCount <= 0:
+                self._stabilityLabel = label
+                self._stabilityCount = 1
+
+        threshold = SETTINGS.settings.confidence_threshold
+        if (score > threshold
+                and self._stabilityCount >= 4
+                and now - self.lastEmitTime > 1.0):
             self.lastEmitTime = now
             self.lastGesture  = label
             self.gestureRecognized.emit(label, score)
+            self._stabilityCount = 0
+
+    @qtc.pyqtSlot()
+    def resetStability(self) -> None:
+        """Reset the stability accumulator so transition frames don't carry over."""
+        self._stabilityCount = 0
+        self._stabilityLabel = None
+        self._prevVec        = None
 
     def reload(self) -> None:
         """Reload classifier and labels from disk after new training."""
@@ -584,7 +713,8 @@ class GestureRecognizerWithoutLinesWorker(qtc.QObject):
 # ══════════════════════════════════════════════════════════════════════════
 
 class MainGui(qtw.QMainWindow):
-    frameForGesture = qtc.pyqtSignal(np.ndarray)
+    frameForGesture      = qtc.pyqtSignal(np.ndarray)
+    resetWorkerStability = qtc.pyqtSignal()
 
     def __init__(self, startup_warnings: Optional[List[str]] = None) -> None:
         boot_log("__init__ start")
@@ -722,12 +852,13 @@ class MainGui(qtw.QMainWindow):
         self.ttsEnabled = True
         self.ttsWorker = TTSWorker()
         self.ttsWorker.start()
-        qtc.QTimer.singleShot(1000, self._checkTTSAvailable)
+        qtc.QTimer.singleShot(3000, self._checkTTSAvailable)
 
         # Signal connections
         self.frameForGesture.connect(self.signRecognizerNoLines.processFrame)
         self.signRecognizerNoLines.gestureRecognized.connect(self.updateASLTranscription)
         self.signRecognizerNoLines.landmarksReady.connect(self._receiveLandmarks)
+        self.resetWorkerStability.connect(self.signRecognizerNoLines.resetStability)
 
         self.letterBuffer              = []
         self.lastGestureTime           = None
@@ -737,6 +868,7 @@ class MainGui(qtw.QMainWindow):
         self._lastAcceptedGesture      = None
         self._lastAcceptedTime         = 0.0
         self._lastFrameEmitTime        = 0.0
+        self._committedWords           = []   # list of (word, tag, separator)
 
         if self.cap:
             boot_log("launching camera thread")
@@ -777,6 +909,22 @@ class MainGui(qtw.QMainWindow):
 
         outputLayout = qtw.QVBoxLayout()
         outputLayout.addWidget(qtw.QLabel("Signed Output"))
+
+        aslCtrlRow = qtw.QHBoxLayout()
+        clearBtn = qtw.QPushButton("Clear")
+        clearBtn.setToolTip("Clear all signed output")
+        clearBtn.clicked.connect(self.clearTranscript)
+        exportBtn = qtw.QPushButton("Export")
+        exportBtn.setToolTip("Save transcript to file")
+        exportBtn.clicked.connect(self.exportTranscript)
+        addSpaceBtn = qtw.QPushButton("Commit Word  [Space]")
+        addSpaceBtn.setToolTip("Commit current letters as a word (same as pressing Space)")
+        addSpaceBtn.clicked.connect(lambda: self._manualFlush(append=" "))
+        aslCtrlRow.addWidget(clearBtn)
+        aslCtrlRow.addWidget(exportBtn)
+        aslCtrlRow.addWidget(addSpaceBtn)
+        outputLayout.addLayout(aslCtrlRow)
+
         outputLayout.addWidget(self.aslTranscriptionOutput, 2)
         outputLayout.addWidget(qtw.QLabel("Audio Transcription"))
         outputLayout.addWidget(self.transcriptionOutput, 1)
@@ -1141,7 +1289,7 @@ class MainGui(qtw.QMainWindow):
             self.cameraView.setPixmap(pixmap)
         if self.translatorCameraView.isVisible():
             now_emit = time.time()
-            if now_emit - self._lastFrameEmitTime >= 0.30:
+            if now_emit - self._lastFrameEmitTime >= 0.15:
                 self._lastFrameEmitTime = now_emit
                 self.frameForGesture.emit(frame_copy)
             self.translatorCameraView.setPixmap(pixmap)
@@ -1199,9 +1347,6 @@ class MainGui(qtw.QMainWindow):
     def updateASLTranscription(self, name: str, score: float) -> None:
         SPECIAL = {"DEL", "DELETE", "BACKSPACE"}
         now = time.time()
-        if name.upper() not in SPECIAL:
-            if name == self._lastAcceptedGesture and now - self._lastAcceptedTime < 1.5:
-                return
         self._lastAcceptedGesture = name
         self._lastAcceptedTime    = now
         if name.upper() in SPECIAL:
@@ -1209,38 +1354,63 @@ class MainGui(qtw.QMainWindow):
         else:
             preview = self.decoder.addLetter(name)
         if SETTINGS.settings.preview_toggle:
-            self._updatePreviewLine(preview)
+            self._refreshASLDisplay(preview)
 
-    def _updatePreviewLine(self, text: str) -> None:
+    def _refreshASLDisplay(self, preview: str = "") -> None:
+        committed = "".join(w + sep for w, _, sep in self._committedWords)
+        self.aslTranscriptionOutput.setPlainText(committed + preview)
         cursor = self.aslTranscriptionOutput.textCursor()
         cursor.movePosition(qtg.QTextCursor.MoveOperation.End)
-        if self.aslTranscriptionOutput.document().isEmpty():
-            cursor.insertText(text)
-        else:
-            cursor.movePosition(qtg.QTextCursor.MoveOperation.StartOfBlock,
-                                qtg.QTextCursor.MoveMode.KeepAnchor)
-            cursor.removeSelectedText()
-            cursor.insertText(text)
         self.aslTranscriptionOutput.setTextCursor(cursor)
         self.aslTranscriptionOutput.ensureCursorVisible()
+
+    def _mergeAndCommit(self, text: str, tag: str, separator: str) -> None:
+        """
+        Append a committed word, attempting to merge it with preceding letter-fragments
+        if the concatenation forms a dictionary word.  Only 'letters'-tagged entries
+        (partial words not found in the dictionary) are ever merged — matched words,
+        autocorrected words, and entries separated by a newline are left untouched.
+        """
+        if tag == "letters":
+            candidates = []
+            for i in range(len(self._committedWords) - 1, -1, -1):
+                w, t, sep = self._committedWords[i]
+                if sep == "\n" or t != "letters":
+                    break
+                candidates.insert(0, i)
+                if len(candidates) >= 3:
+                    break
+
+            if candidates:
+                parts = [self._committedWords[i][0] for i in candidates] + [text]
+                for combo_len in range(len(parts), 1, -1):
+                    combo = "".join(parts[-combo_len:]).upper()
+                    if len(combo) <= 15 and combo in self.decoder.wordSet:
+                        del self._committedWords[-(combo_len - 1):]
+                        self._committedWords.append((combo, "merged", separator))
+                        return
+
+        self._committedWords.append((text, tag, separator))
 
     def checkWordBoundary(self) -> None:
         if self.decoder.shouldFlush():
             text, conf, tag = self.decoder.flush()
             if self.ttsEnabled:
                 self.ttsWorker.speak(text)
-            if SETTINGS.settings.confidence_toggle:
-                display = f"{text}  [{tag} {conf:.0%}]"
-            else:
-                display = text
-            cursor = self.aslTranscriptionOutput.textCursor()
-            cursor.movePosition(qtg.QTextCursor.MoveOperation.End)
-            cursor.movePosition(qtg.QTextCursor.MoveOperation.StartOfBlock,
-                                qtg.QTextCursor.MoveMode.KeepAnchor)
-            cursor.removeSelectedText()
-            cursor.insertText(display + "\n")
-            self.aslTranscriptionOutput.setTextCursor(cursor)
-            self.aslTranscriptionOutput.ensureCursorVisible()
+            self._mergeAndCommit(text, tag, " ")
+            self._refreshASLDisplay()
+            self.resetWorkerStability.emit()
+
+    def _manualFlush(self, append: str = " ") -> None:
+        """Immediately commit the current letter buffer (hotkey / button trigger)."""
+        if not self.decoder.buffer:
+            return
+        text, conf, tag = self.decoder.flush()
+        if self.ttsEnabled:
+            self.ttsWorker.speak(text)
+        self._mergeAndCommit(text, tag, append)
+        self._refreshASLDisplay()
+        self.resetWorkerStability.emit()
 
     def updateTranscription(self, text: str) -> None:
         ts     = datetime.now().strftime("[%H:%M:%S] ")
@@ -1303,6 +1473,7 @@ class MainGui(qtw.QMainWindow):
         os.startfile(str(out_file))
 
     def clearTranscript(self) -> None:
+        self._committedWords = []
         self.aslTranscriptionOutput.clear()
         self.transcriptionOutput.clear()
         self.decoder.clear()
@@ -1757,8 +1928,21 @@ class MainGui(qtw.QMainWindow):
                 self.cameraMenu.addItem(f"Camera {i}", i)
 
     def keyPressEvent(self, e) -> None:
-        if e.key() == qtc.Qt.Key.Key_Escape and self.windowManager.mode != WindowMode.WINDOWED:
+        key = e.key()
+        if key == qtc.Qt.Key.Key_Escape and self.windowManager.mode != WindowMode.WINDOWED:
             self.windowManager.apply(mode=WindowMode.WINDOWED)
+        elif key == qtc.Qt.Key.Key_Space:
+            self._manualFlush(append=" ")
+        elif key in (qtc.Qt.Key.Key_Return, qtc.Qt.Key.Key_Enter):
+            self._manualFlush(append="\n")
+        elif key == qtc.Qt.Key.Key_Backspace:
+            preview = self.decoder.deleteLast()
+            if SETTINGS.settings.preview_toggle:
+                self._refreshASLDisplay(preview)
+        elif key == qtc.Qt.Key.Key_Delete:
+            self.decoder.clear()
+            if SETTINGS.settings.preview_toggle:
+                self._refreshASLDisplay("")
 
     def closeEvent(self, event) -> None:
         if hasattr(self, "stopEvent"):
@@ -1767,6 +1951,8 @@ class MainGui(qtw.QMainWindow):
             self.cameraThread.join(timeout=1)
         if hasattr(self, "cap") and self.cap:
             self.cap.release()
+        if hasattr(self, "ttsWorker"):
+            self.ttsWorker.stop()
         if hasattr(self, "whisperWorker"):
             self.whisperWorker.stop()
             self.whisperWorker.wait()
